@@ -1,0 +1,17 @@
+name = "vexid"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+account_id = "cec46487be2effdd91ebc2122d9cc6a1"
+
+[durable_objects]
+bindings = [
+  { name = "AGENT_IDENTITY", class_name = "AgentIdentity" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentIdentity"]
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "vex"

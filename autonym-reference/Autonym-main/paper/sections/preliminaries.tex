@@ -1,0 +1,138 @@
+\section{Preliminaries}\label{sec:preliminaries}
+
+This section establishes the formal definitions, cryptographic primitives, and encoding conventions that underpin the Autonym protocol.
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Core Definitions}\label{sec:definitions}
+
+\begin{definition}[Autonym Identifier]\label{def:aid}
+An \emph{Autonym Identifier} (\aid) is a self-certifying, permanent identifier derived deterministically from an agent's inception event.  Formally,
+\[
+  \aid \;=\; \textsf{Base58}\!\bigl(\hash{\cbordet{e_0 \setminus \{\fld{aid},\,\fld{d},\,\fld{sig}\}}}\bigr),
+\]
+where $e_0$ is the inception event and $\cbordet{\cdot}$ denotes CBOR deterministic encoding (RFC~8949~\S4.2).  Because the hash input excludes the \fld{aid}, \fld{d}, and \fld{sig} fields, the derivation is non-circular.  The \aid{} never changes, even through key rotations---it is cryptographically bound to the inception key material alone.
+\end{definition}
+
+\begin{definition}[Key Event]\label{def:key-event}
+A \emph{key event} is a signed, CBOR-encoded record that modifies the key state of an agent.  Three event types exist:
+\begin{enumerate}
+  \item \inception{} ($s = 0$): establishes the \aid, the initial signing key~$\pk$, and the pre-rotation commitment $\nkh = \hash{\npk}$.
+  \item \rotation{} ($s > 0$): transitions to a new signing key~$\pk'$ such that $\hash{\pk'} = \nkh_{\text{prev}}$, and publishes a fresh commitment $\nkh' = \hash{\npk'}$.
+  \item \deactivation{} (terminal): permanently freezes the identity, requiring dual signatures from both the current key and the pre-rotated next key.
+\end{enumerate}
+Every event carries a self-referential digest $\fld{d} = \hash{\cbordet{e \setminus \{\fld{aid},\,\fld{d},\,\fld{sig}\}}}$ and is signed: $\fld{sig} = \sig{\sk}{\fld{d}}$.
+\end{definition}
+
+\begin{definition}[Key Event Log]\label{def:kel}
+A \emph{Key Event Log} (\kel) is a hash-chained, append-only sequence of key events $\langle e_0, e_1, \ldots, e_n \rangle$ satisfying:
+\begin{itemize}
+  \item $e_0.\fld{t} = \inception$ and $e_0.\fld{s} = 0$;
+  \item $\forall\, i > 0$: $e_i.\fld{s} = i$ and $e_i.\fld{p} = e_{i-1}.\fld{d}$;
+  \item each rotation event satisfies $\hash{e_i.\fld{k}} = e_{i-1}.\fld{n}$;
+  \item if $e_n.\fld{t} = \deactivation$, no further events are valid.
+\end{itemize}
+A \kel{} can be verified independently by any party possessing the event sequence, with zero trust in any server.
+\end{definition}
+
+\begin{definition}[Trust Attestation Log]\label{def:tal}
+A \emph{Trust Attestation Log} (\tal) is a hash-chained, signed log of attestation entries---operator attestations, behavioral attestations, and vouches---maintained separately from the \kel.  Each \tal{} entry references a \kel{} event by sequence number and digest, binding the attestation to a specific key state.  The \tal{} can be pruned independently of the \kel{} (e.g., removing expired vouches) without affecting identity verification.
+\end{definition}
+
+\begin{definition}[Witness]\label{def:witness}
+A \emph{witness} is a lightweight service that co-signs key events for an agent.  Upon receiving a new event, a witness:
+\begin{enumerate}
+  \item verifies the event against the \kel{} it holds for that agent;
+  \item if valid, signs a receipt attesting to the event;
+  \item stores the event in its copy of the \kel.
+\end{enumerate}
+Witnesses follow a \emph{first-seen-first-signed} rule: at any sequence number, a witness signs only the first valid event it observes and rejects all subsequent conflicting events.
+\end{definition}
+
+\begin{definition}[Witness Receipt]\label{def:receipt}
+A \emph{witness receipt} is a signature by a witness over the digest of a specific key event.  Receipts are aggregated compactly: each receipt references the witness by its index in the event's $\fld{w}$ array rather than by full \aid, reducing size by 53--75\%.  An event is considered \emph{established} when at least $\wt$ receipts have been collected from the declared witness set~$\wset$.
+\end{definition}
+
+\begin{definition}[Home Node]\label{def:home-node}
+A \emph{home node} is any Autonym node listed in an agent's \fld{svc} field.  Home nodes are obligated to:
+\begin{itemize}
+  \item store the agent's full \kel{} and \tal;
+  \item accept and queue messages addressed to the agent;
+  \item respond to \kel/\tal{} queries;
+  \item replicate the agent's \kel{} to requesting nodes.
+\end{itemize}
+An agent MAY declare multiple home nodes for redundancy.  Home nodes are updated via \rotation{} events.
+\end{definition}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Cryptographic Primitives}\label{sec:crypto-primitives}
+
+Autonym uses a narrow set of modern cryptographic primitives, chosen for performance, security margins, and implementation simplicity.
+
+\paragraph{Ed25519 (RFC~8032).}
+All signing and verification in the protocol uses Ed25519~\cite{rfc8032,ed25519-security}, an Edwards-curve Digital Signature Algorithm over Curve25519.  Ed25519 produces 64-byte signatures from 32-byte public keys and provides existential unforgeability under adaptive chosen-message attack (EUF-CMA) assuming the hardness of the elliptic-curve discrete-logarithm problem.  Key events, request authentication headers, and witness receipts are all Ed25519 signatures.
+
+\paragraph{X25519 (RFC~7748).}
+Ephemeral key agreement for end-to-end encryption uses X25519 Diffie--Hellman~\cite{rfc7748}.  Each message generates a fresh X25519 keypair; the shared secret is computed as $\xdh{\esk}{\pk_{\text{recipient}}}$, where the recipient's X25519 public key is derived from their Ed25519 key via the birational map specified in RFC~8032.
+
+\paragraph{BLAKE3.}
+All hashing---\aid{} derivation, event digests, pre-rotation commitments, chain links, and message content hashing---uses BLAKE3 with 256-bit output~\cite{blake3}.  BLAKE3 provides collision resistance up to $2^{128}$ work and preimage resistance up to $2^{256}$ work.  There is no SHA-256 anywhere in the protocol.
+
+\paragraph{XChaCha20-Poly1305.}
+Authenticated encryption with associated data (AEAD) uses XChaCha20-Poly1305~\cite{rfc8439,xchacha}, the extended-nonce variant of ChaCha20-Poly1305.  The 24-byte nonce permits safe random generation without birthday-bound collision concerns.  Encryption is written as $\enc{K}{N}{\text{plaintext}}$ with associated data bound into the Poly1305 tag.
+
+\paragraph{HKDF-BLAKE3.}
+Symmetric keys for AEAD are derived via HKDF~\cite{rfc5869} instantiated with BLAKE3 as the underlying hash.  The derivation is:
+\[
+  K = \kdf{\mathit{ikm} = \xdh{\esk}{\pk_R},\;\; \mathit{salt} = \aid_S \| \aid_R,\;\; \mathit{info} = \texttt{"autonym-e2e-v1"}}
+\]
+producing a 32-byte symmetric key.
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Encoding Conventions}\label{sec:encoding}
+
+\paragraph{CBOR Deterministic Encoding.}
+All protocol objects---key events, attestations, messages, receipts, and error responses---are encoded using CBOR with deterministic encoding as specified in RFC~8949~\S4.2~\cite{rfc8949}.  Deterministic encoding guarantees exactly one valid byte sequence for any given protocol object, eliminating canonicalization ambiguity.  We write $\cbordet{x}$ for the deterministic encoding of object~$x$ and $\cbor{x}$ when determinism is not required.
+
+Public keys, signatures, and hashes are encoded as CBOR byte strings (major type~2): Ed25519 public keys as 32~raw bytes, Ed25519 signatures as 64~raw bytes, X25519 public keys as 32~raw bytes, and BLAKE3 digests as 32~raw bytes.  For human display (logs, CLI output, aliases), keys and hashes are rendered as Base58.
+
+\paragraph{CBOR Sequences.}
+Batch transfers of events---during sync, replication, or bulk fetch---use CBOR Sequences (RFC~8742)~\cite{rfc8742}: a concatenation of individually CBOR-encoded events without a wrapping array.  This enables streaming decode, allowing receivers to process events as they arrive without buffering the entire batch.  The content type is \texttt{application/cbor-seq}.
+
+\paragraph{Compression.}
+Nodes SHOULD support zstd compression (RFC~8478)~\cite{rfc8478} with a protocol-versioned trained dictionary.  Expected compression ratios range from $2\text{--}3\times$ without a dictionary to $4\text{--}8\times$ with a trained dictionary (e.g., a 340-byte CBOR event compresses to approximately 50--85~bytes).  Compression is negotiated via standard HTTP \texttt{Accept-Encoding: zstd} headers.
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Notation}\label{sec:notation}
+
+\tabref{tab:notation} summarizes the principal symbols used throughout this paper.
+
+\begin{table}[ht]
+\centering
+\caption{Summary of notation.}\label{tab:notation}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\aid$ & Autonym Identifier \\
+$\aidof{x}$ & AID of agent $x$ \\
+$\eid{i}{s}$ & Event $i$ at sequence $s$ \\
+$\kel$ & Key Event Log \\
+$\tal$ & Trust Attestation Log \\
+$\wset$ & Witness set \\
+$\wt$ & Witness threshold \\
+$\pk,\; \sk$ & Current public / secret (signing) key \\
+$\npk,\; \nsk$ & Next pre-rotated public / secret key \\
+$\nkh$ & Next-key hash (pre-rotation commitment) \\
+$\epk,\; \esk$ & Ephemeral public / secret key (X25519) \\
+$\hash{m}$ & BLAKE3 hash of $m$ \\
+$\sig{k}{m}$ & Ed25519 signature of $m$ under key $k$ \\
+$\verify{pk}{\sigma}{m}$ & Verify signature $\sigma$ on $m$ with key $\pk$ \\
+$\xdh{a}{B}$ & X25519 Diffie--Hellman ($\sk_a$, $\pk_B$) \\
+$\kdf{\cdot}$ & HKDF-BLAKE3 key derivation \\
+$\enc{K}{N}{m}$ & XChaCha20-Poly1305 encryption \\
+$\cbor{x}$ & CBOR encoding of $x$ \\
+$\cbordet{x}$ & CBOR deterministic encoding of $x$ \\
+$\fld{f}$ & Protocol field named $f$ \\
+\bottomrule
+\end{tabular}
+\end{table}

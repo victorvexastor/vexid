@@ -1,0 +1,260 @@
+% test-vectors.tex — Appendix: Reproducible test vectors
+% TODO: Replace placeholder values with actual output from generate_vectors.py
+
+\section{Test Vectors}\label{app:test-vectors}
+
+This appendix provides deterministic test vectors for the core protocol
+operations: inception, rotation, deactivation, and end-to-end encryption.
+All vectors are generated from a fixed seed using the script
+\texttt{paper/scripts/generate\_vectors.py}.
+To reproduce:
+
+\begin{lstlisting}[language=bash, basicstyle=\ttfamily\small]
+pip install pynacl cbor2 blake3
+python paper/scripts/generate_vectors.py
+\end{lstlisting}
+
+\noindent
+All hash values use BLAKE3 with 256-bit output~\cite{blake3}.
+All signatures use Ed25519~\cite{rfc8032}.
+All CBOR encodings use deterministic mode (RFC~8949 \S4.2)~\cite{rfc8949}.
+
+\medskip\noindent
+Seed: \texttt{6175746f6e796d2d746573742d766563746f72732d7631}
+(\texttt{autonym-test-vectors-v1} in ASCII).
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Inception Test Vector}\label{app:vec-inception}
+
+The inception event establishes the identity and derives the \aid{}
+via the two-pass algorithm (\algref{alg:aid-derivation}).
+
+% TODO: Replace with actual output from generate_vectors.py
+\begin{table}[H]
+\centering
+\caption{Inception event test vector.}\label{tab:vec-inception}
+\small
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Step} & \textbf{Field} & \textbf{Value} \\
+\midrule
+Key gen   & $\pk_0$ (current)
+          & \texttt{0x...placeholder...} \\
+          & $\pk_1$ (next)
+          & \texttt{0x...placeholder...} \\
+          & $\fld{n} = \hash{\pk_1}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Pass 1    & CBOR bytes (excl \fld{aid},\fld{d},\fld{sig})
+          & \texttt{0x...placeholder...} \\
+          & $\fld{aid} = \hash{\text{above}}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Pass 2    & CBOR bytes (excl \fld{d},\fld{sig})
+          & \texttt{0x...placeholder...} \\
+          & $\fld{d} = \hash{\text{above}}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Sign      & $\fld{sig} = \sig{\sk_0}{\fld{d}}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Encoded   & Full CBOR (hex)
+          & \texttt{0x...placeholder...} \\
+          & Length
+          & \texttt{...placeholder...} bytes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Verification checklist.}
+\begin{enumerate}[nosep]
+  \item Recompute $\hash{\text{canonical}_1}$ from the event fields
+        (excluding \fld{aid}, \fld{d}, \fld{sig}) and verify it matches
+        the \aid.
+  \item Recompute $\fld{d}$ from the event fields (excluding \fld{d},
+        \fld{sig}, with \fld{aid} populated) and verify it matches.
+  \item Verify $\sig{\pk_0}{\fld{d}}$ succeeds.
+\end{enumerate}
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Rotation Test Vector}\label{app:vec-rotation}
+
+The rotation event transitions to the pre-committed next key.
+The signature is produced by the \emph{previous} key~$\sk_0$.
+
+% TODO: Replace with actual output from generate_vectors.py
+\begin{table}[H]
+\centering
+\caption{Rotation event test vector.}\label{tab:vec-rotation}
+\small
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Step} & \textbf{Field} & \textbf{Value} \\
+\midrule
+Key gen   & $\pk_1$ (new current)
+          & \texttt{0x...placeholder...} \\
+          & $\pk_2$ (next-next)
+          & \texttt{0x...placeholder...} \\
+          & $\fld{n} = \hash{\pk_2}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Pre-rot   & $\hash{\pk_1}$
+          & \texttt{0x...placeholder...} \\
+          & inception.$\fld{n}$
+          & \texttt{0x...placeholder...} \\
+          & Match
+          & \texttt{true} \\
+\midrule
+Chain     & $\fld{p}$ = inception.$\fld{d}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Digest    & CBOR bytes (excl \fld{d},\fld{sig})
+          & \texttt{0x...placeholder...} \\
+          & $\fld{d} = \hash{\text{above}}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Sign      & $\fld{sig} = \sig{\sk_0}{\fld{d}}$ (PREVIOUS key)
+          & \texttt{0x...placeholder...} \\
+\midrule
+Encoded   & Full CBOR (hex)
+          & \texttt{0x...placeholder...} \\
+          & Length
+          & \texttt{...placeholder...} bytes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Verification checklist.}
+\begin{enumerate}[nosep]
+  \item Verify $\hash{\pk_1} = \fld{n}_{\text{prev}}$ (pre-rotation).
+  \item Verify $\fld{p} = \fld{d}_{\text{prev}}$ (chain link).
+  \item Verify $\fld{s} = 1$ (sequence continuity).
+  \item Verify the signature was produced by $\sk_0$ (the
+        \emph{previous} key).
+\end{enumerate}
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Deactivation Test Vector}\label{app:vec-deactivation}
+
+The deactivation event freezes the identity permanently.
+It requires dual signatures: $\fld{sig}$ from the current key~$\sk_1$
+and $\fld{ns}$ from the next pre-committed key~$\sk_2$.
+
+% TODO: Replace with actual output from generate_vectors.py
+\begin{table}[H]
+\centering
+\caption{Deactivation event test vector.}\label{tab:vec-deactivation}
+\small
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Step} & \textbf{Field} & \textbf{Value} \\
+\midrule
+Chain     & $\fld{p}$ = rotation.$\fld{d}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Digest    & CBOR bytes (excl \fld{d},\fld{sig})
+          & \texttt{0x...placeholder...} \\
+          & $\fld{d} = \hash{\text{above}}$
+          & \texttt{0x...placeholder...} \\
+\midrule
+Sign      & $\fld{sig} = \sig{\sk_1}{\fld{d}}$ (current key)
+          & \texttt{0x...placeholder...} \\
+          & $\fld{ns} = \sig{\sk_2}{\fld{d}}$ (next key)
+          & \texttt{0x...placeholder...} \\
+\midrule
+Dual-sig  & $\hash{\pk_2}$
+          & \texttt{0x...placeholder...} \\
+          & rotation.$\fld{n}$
+          & \texttt{0x...placeholder...} \\
+          & Match
+          & \texttt{true} \\
+\midrule
+Encoded   & Full CBOR (hex)
+          & \texttt{0x...placeholder...} \\
+          & Length
+          & \texttt{...placeholder...} bytes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Verification checklist.}
+\begin{enumerate}[nosep]
+  \item Verify $\fld{sig}$ under $\pk_1$ (current key).
+  \item Verify $\fld{ns}$ under $\pk_2$ (next key).
+  \item Verify $\hash{\pk_2} = \fld{n}$ from the rotation event
+        (pre-rotation commitment).
+  \item Confirm the identity is frozen---no further events are valid.
+\end{enumerate}
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{E2E Encryption Test Vector}\label{app:vec-e2e}
+
+End-to-end encryption using ephemeral X25519 key exchange,
+HKDF-BLAKE3 key derivation, and XChaCha20-Poly1305~\cite{xchacha} AEAD.
+The plaintext is \texttt{Hello from Autonym agent!} (25~bytes).
+
+% TODO: Replace with actual output from generate_vectors.py
+\begin{table}[H]
+\centering
+\caption{E2E encryption test vector.}\label{tab:vec-e2e}
+\small
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Step} & \textbf{Field} & \textbf{Value} \\
+\midrule
+Keys      & sender \aid
+          & \texttt{0x...placeholder...} \\
+          & recipient Ed25519 $\pk$
+          & \texttt{0x...placeholder...} \\
+          & recipient X25519 $\pk$
+          & \texttt{0x...placeholder...} \\
+          & ephemeral X25519 $\sk$
+          & \texttt{0x...placeholder...} \\
+          & ephemeral X25519 $\pk$
+          & \texttt{0x...placeholder...} \\
+\midrule
+DH        & shared secret
+          & \texttt{0x...placeholder...} \\
+\midrule
+KDF       & salt ($\aid_s \| \aid_r$)
+          & \texttt{0x...placeholder...} \\
+          & info
+          & \texttt{6175746f6e796d2d6532652d7631} \\
+          & symmetric key (32\,B)
+          & \texttt{0x...placeholder...} \\
+\midrule
+AEAD      & plaintext
+          & \texttt{48656c6c6f2066726f6d204175...} \\
+          & associated data (CBOR)
+          & \texttt{0x...placeholder...} \\
+          & nonce (24\,B)
+          & \texttt{0x...placeholder...} \\
+          & ciphertext (+ 16\,B tag)
+          & \texttt{0x...placeholder...} \\
+\midrule
+Verify    & DH match
+          & \texttt{true} \\
+          & Roundtrip
+          & \texttt{true} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Verification checklist.}
+\begin{enumerate}[nosep]
+  \item Verify both parties derive the same shared secret:
+        $\xdh{\esk}{\pk_r} = \xdh{\sk_r}{\epk}$.
+  \item Verify HKDF output matches given salt and info string
+        \texttt{"autonym-e2e-v1"}.
+  \item Verify decryption recovers the original plaintext.
+  \item Verify decryption fails when associated data is modified
+        (AEAD binding).
+\end{enumerate}
+
+\medskip\noindent
+\textbf{Reproducing these vectors.}
+Run \texttt{python paper/scripts/generate\_vectors.py} and replace
+the placeholder values above with the hex output.
+The script uses a fixed seed (\texttt{autonym-test-vectors-v1}) and
+deterministic key derivation, so all values are reproducible across
+platforms and implementations.

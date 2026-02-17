@@ -1,0 +1,80 @@
+\section{Conclusion}\label{sec:conclusion}
+
+We have presented Autonym, a protocol for trustless, self-certifying AI
+agent identity with built-in end-to-end encrypted messaging over a
+federated network.
+Autonym addresses five fundamental problems in agent identity:
+server-bound identities that die with their platform, absent
+cross-platform verification, irrecoverable key compromise, lack of
+asynchronous reachability, and the absence of proof-of-agency mechanisms.
+
+The protocol combines ideas from several domains---KERI's self-certifying
+identifiers and witness model~\cite{keri}, Nostr's operational
+simplicity and Negentropy-based synchronisation~\cite{nostr,negentropy},
+and modern cryptographic channel construction---into a coherent design
+with formally stated security properties.
+Mandatory pre-rotation ensures that key compromise alone cannot hijack
+an identity; dual-signature deactivation extends this protection to
+identity destruction.
+Per-message ephemeral encryption provides forward secrecy without
+requiring persistent session state, and AEAD binding prevents ciphertext
+transplant attacks.
+The separate Trust Attestation Log enables progressive, privacy-tiered
+proof-of-agency without burdening the key event log.
+
+Our security analysis demonstrates that all eight stated goals hold under
+standard cryptographic assumptions (BLAKE3 collision and preimage
+resistance, Ed25519 EUF-CMA, XChaCha20-Poly1305 IND-CPA and INT-CTXT,
+CDH on Curve25519) and clearly identifies the conditions under which each
+property fails.
+The CBOR-based encoding achieves 86\% storage reduction over JSON, and
+Negentropy synchronisation reduces multi-agent sync from $O(n)$
+round-trips to $O(1)$ negotiation rounds.
+
+\subsection{Future Work}
+
+Several directions remain open:
+
+\begin{enumerate}
+  \item \textbf{Formal verification.}
+        The security arguments presented in \secref{sec:security-analysis}
+        are informal.
+        A machine-checked proof using ProVerif~or Tamarin would provide
+        stronger assurance, particularly for the composition of
+        pre-rotation, witness, and encryption properties.
+
+  \item \textbf{Group messaging.}
+        The current design supports 1:1 messaging only.
+        Extending to group channels---potentially using Sender
+        Keys~or MLS-style tree-based key agreement---is a natural next
+        step, though it introduces state management complexity that the
+        current stateless-per-message design deliberately avoids.
+
+  \item \textbf{Witness incentive mechanisms.}
+        The protocol assumes witnesses participate voluntarily.
+        Exploring incentive structures---reciprocal witnessing, reputation
+        systems, or micro-payment channels---could improve witness
+        availability and reliability in open deployments.
+
+  \item \textbf{CBOR cross-language test suite.}
+        A canonical set of test events with expected CBOR bytes, BLAKE3
+        hashes, and derived AIDs (Appendix~\ref{app:test-vectors}) is
+        essential for interoperable implementations across languages.
+        Expanding the initial vectors into a comprehensive conformance
+        suite is ongoing work.
+
+  \item \textbf{Metadata privacy.}
+        Autonym does not currently provide metadata confidentiality:
+        sender and recipient AIDs, timestamps, and message sizes are
+        visible to routing nodes.
+        Techniques such as onion routing or mix networks could be layered
+        atop the existing architecture for applications requiring stronger
+        privacy guarantees.
+
+  \item \textbf{Post-quantum migration.}
+        The current cryptographic suite (Ed25519, X25519) is not resistant
+        to quantum attack.
+        A migration path to post-quantum signature and key agreement
+        schemes (e.g., ML-DSA, ML-KEM) should be designed as hybrid
+        constructions become standardised.
+\end{enumerate}

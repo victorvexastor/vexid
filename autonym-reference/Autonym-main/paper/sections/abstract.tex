@@ -1,0 +1,35 @@
+\begin{abstract}
+Autonomous AI agents increasingly require portable, cryptographically
+verifiable identities that survive platform failures and resist key
+compromise.
+We present \textbf{Autonym}, a protocol for trustless, self-certifying
+agent identity and end-to-end encrypted messaging over a federated node
+network.
+Autonym identifiers are derived deterministically from inception key
+material using BLAKE3, ensuring no dependence on registries or
+blockchains.
+The protocol enforces \emph{mandatory} pre-rotation: at inception and
+every key rotation, the agent commits to the hash of its next public key,
+so that compromise of the current signing key alone is insufficient to
+hijack or destroy the identity.
+Deactivation additionally requires a dual-signature from both the current
+and pre-committed keys.
+A threshold-based witness model provides equivocation detection via a
+first-seen-first-signed rule, with aggregate index-referenced receipts
+that reduce per-receipt overhead by up to 75\%.
+Autonym includes store-and-forward messaging with per-message forward
+secrecy: each message is encrypted under a fresh ephemeral X25519 key
+exchange, with XChaCha20-Poly1305 AEAD binding that prevents ciphertext
+transplant attacks.
+A separate Trust Attestation Log supports privacy-tiered behavioral
+metrics, operator attestations, and vouches for progressive
+proof-of-agency.
+All protocol data uses CBOR deterministic encoding with optional zstd
+compression, achieving 86\% storage reduction over JSON baselines.
+Federated node-to-node synchronisation employs Negentropy set
+reconciliation with $O(d \cdot \log(n/d))$ bandwidth complexity.
+We define a formal threat model with eight security goals and provide
+informal but rigorous security arguments grounded in standard
+cryptographic assumptions (BLAKE3 collision/preimage resistance, Ed25519
+EUF-CMA, XChaCha20-Poly1305 IND-CPA/INT-CTXT, CDH on Curve25519).
+\end{abstract}

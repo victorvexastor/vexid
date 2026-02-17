@@ -1,0 +1,136 @@
+\section{Related Work}\label{sec:related-work}
+
+Autonym draws on a rich landscape of prior work spanning self-certifying identity, key management, decentralized messaging, secure channel construction, and the nascent field of agent-specific identity.
+This section surveys each domain, identifies the contributions most relevant to Autonym's design, and highlights the gaps that motivate the protocol.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Self-Certifying Identity}\label{sec:rw-identity}
+
+\paragraph{KERI.}
+The Key Event Receipt Infrastructure~\cite{keri,keri-ietf} is Autonym's most direct ancestor.
+KERI introduced Key Event Logs (\kel{}s)---append-only, hash-chained sequences of key lifecycle events---together with self-certifying identifiers derived from inception events, pre-rotation commitments, and a witness model for equivocation detection.
+Autonym inherits all four concepts but departs from KERI in several ways.
+First, KERI employs CESR (Composable Event Streaming Representation), a custom text-binary hybrid encoding; Autonym replaces this with deterministic CBOR~\cite{rfc8949}, which enjoys broad tooling support and an unambiguous canonical form (RFC~8949~\S4.2).
+Second, KERI supports a large matrix of key types and multi-signature schemes, increasing implementation surface; Autonym restricts to Ed25519~\cite{ed25519-security} to minimize complexity.
+Third, KERI is identity-only---it deliberately excludes messaging; Autonym integrates store-and-forward messaging with end-to-end encryption as a first-class protocol layer (\secref{sec:messaging}).
+Finally, KERI introduces domain-specific terminology (TELs, ACDCs, OOBIs, SAIDs) that can impede adoption; Autonym favours conventional names (\kel{}, \tal{}, service endpoints).
+
+\paragraph{W3C DIDs.}
+The Decentralized Identifiers specification~\cite{did-core} provides a broad framework for decentralized identity through method-specific resolution.
+DID Documents describe verification methods, service endpoints, and controller relationships.
+However, the security properties of a DID are entirely method-dependent: \texttt{did:web} trusts DNS and TLS, \texttt{did:key} offers no rotation, and \texttt{did:ion} requires a Bitcoin full node.
+Autonym provides DID interoperability by generating conformant DID Documents on the fly from \kel{}s (as \texttt{did:autonym}), but the \aid{} remains the canonical identifier, ensuring that security properties do not degrade through method-layer indirection.
+
+\paragraph{DID:PLC (AT Protocol).}
+The AT Protocol~\cite{atproto} powers Bluesky and introduces \texttt{did:plc}, a DID method backed by a centralized PLC (Public Ledger of Credentials) directory.
+PLC supports key rotation via signed operations submitted to the directory, but the PDS (Personal Data Server) typically holds signing keys custodially on behalf of the user.
+This trades self-sovereignty for usability: account recovery is possible through the PLC directory, but the directory becomes a single point of trust.
+Autonym avoids custodial key management entirely---the agent always holds its own Ed25519 private key, and recovery relies on pre-rotation commitments rather than a trusted third party.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Key Management}\label{sec:rw-keys}
+
+\paragraph{Pre-rotation.}
+KERI KID-0005~\cite{keri-prerotation} introduced pre-rotation: at inception, the controller commits to the hash of the next public key ($\nkh = \hash{\npk}$).
+A key compromise cannot produce a valid rotation because the attacker does not possess the pre-committed next key.
+In KERI, pre-rotation is supported but optional; identifiers may be created without a next-key commitment.
+Autonym makes pre-rotation \emph{mandatory}---every inception and rotation event MUST include the \fld{n} field---closing the gap where identifiers could exist without compromise recovery.
+
+\paragraph{UCAN.}
+Universal Capability Authorization Tokens~\cite{ucan} provide a capability-based authorization framework built on signed JWT chains.
+UCANs enable delegation (Alice can grant Bob a subset of her capabilities) and are complementary to identity systems.
+Autonym does not implement capability delegation at the protocol layer, but its \tal{} structure (particularly operator attestations and vouches) could carry UCAN-style delegation proofs as an extension.
+
+\paragraph{ZCAPs.}
+Authorization Capabilities for Linked Data~\cite{zcaps} take a similar approach to delegated authorization, using JSON-LD and Linked Data Proofs.
+ZCAPs support capability chains, attenuation, and revocation.
+Like UCANs, ZCAPs address a complementary problem (authorization) rather than identity lifecycle management.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Decentralized Messaging}\label{sec:rw-messaging}
+
+\paragraph{DIDComm.}
+DIDComm Messaging v2.0~\cite{didcomm} is the Decentralized Identity Foundation's messaging layer for DID-based communication.
+DIDComm provides rich message routing, content types, and protocol negotiation.
+However, DIDComm is complex: it requires DID resolution, envelope encryption via JWE or ECDH-ES, and does not prescribe per-message forward secrecy by default.
+Autonym's messaging layer is deliberately simpler---a single envelope format with mandatory per-message ephemeral key exchange providing forward secrecy (\secref{sec:e2e-encryption}).
+
+\paragraph{Matrix.}
+The Matrix protocol~\cite{matrix-spec} provides federated, end-to-end encrypted messaging using the Olm and Megolm ratchets (derived from the Signal Double Ratchet).
+Matrix servers attest user identity---if a homeserver is compromised, so is the identity mapping.
+Matrix is designed for human group communication with rich room semantics; Autonym targets point-to-point agent messaging with self-certifying identity that survives server compromise.
+
+\paragraph{Nostr.}
+Nostr~\cite{nostr} takes a minimalist approach: identities are bare secp256k1 public keys, and messages (events) are JSON objects signed and published to relays.
+Nostr's simplicity has enabled rapid adoption, and its NIP-77~\cite{nip77} negentropy-based set reconciliation provides efficient relay synchronization.
+Autonym adopts Negentropy sync~\cite{negentropy} directly from this lineage.
+However, Nostr lacks key rotation (NIP-41 remains a draft with no finalized specification), has no witness model, and provides no native end-to-end encryption with forward secrecy.
+Agent identity on Nostr is indistinguishable from human identity.
+
+\paragraph{AgentMail.}
+AgentMail~\cite{agentmail} provides email-like infrastructure specifically for AI agents, with mailboxes, threading, and API-first design.
+Identity is centralized---agents register with the AgentMail service.
+Autonym provides similar store-and-forward semantics but with self-certifying, federated identity that does not depend on any single service provider.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Secure Channels}\label{sec:rw-channels}
+
+\paragraph{Signal Double Ratchet.}
+The Signal protocol~\cite{signal-protocol} combines the Double Ratchet algorithm with X3DH key agreement to provide forward secrecy and future secrecy (post-compromise security) through continuous key ratcheting.
+This is the state of the art for persistent messaging sessions.
+However, the Double Ratchet requires both parties to maintain synchronized session state; if state is lost, messages become undecryptable.
+Autonym's per-message ephemeral approach (\secref{sec:e2e-encryption}) trades ratcheting's future secrecy for statelessness: each message is an independent key agreement using a fresh X25519 ephemeral keypair.
+This design suits AI agents that may be stateless, run across multiple instances, or restart frequently.
+
+\paragraph{Noise Framework.}
+The Noise Protocol Framework~\cite{noise-framework} defines a family of Diffie-Hellman-based handshake patterns with formal security properties.
+Noise handshakes power WireGuard and the Lightning Network.
+Autonym's per-message encryption resembles a degenerate Noise~\texttt{N} pattern (one-way, no static sender authentication via DH---instead, authentication is provided by the Ed25519 signature on the envelope), optimized for asynchronous, one-shot message delivery.
+
+\paragraph{X3DH.}
+The Extended Triple Diffie-Hellman protocol~\cite{x3dh} enables asynchronous key agreement by pre-publishing signed pre-keys.
+X3DH is designed as the handshake for the Signal Double Ratchet.
+Autonym does not use X3DH because it does not maintain ratchet sessions; instead, each message performs a single X25519 exchange between a fresh ephemeral key and the recipient's public key derived from their Ed25519 identity key via RFC~8032~\cite{rfc8032}.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Agent Identity Systems}\label{sec:rw-agent-identity}
+
+The emergence of autonomous AI agents in 2025--2026 has prompted several domain-specific identity proposals.
+
+\paragraph{NIST.}
+The NIST concept paper on autonomous agent identity~\cite{nist-agent-identity} articulates the government perspective: agents need machine-readable credentials, lifecycle management, and auditability.
+The paper identifies requirements that align with Autonym's design---cryptographic binding between identity and keys, rotation support, and attestation of agent provenance---but does not prescribe a protocol.
+
+\paragraph{Clawstr.}
+Clawstr~\cite{clawstr} deploys AI agents on the Nostr relay network, enabling agent-to-agent communication via Nostr events.
+Clawstr inherits Nostr's limitations: no key rotation, secp256k1 identity with no pre-rotation, and no formal agent attestation.
+Agent identity is indistinguishable from human identity at the protocol level.
+
+\paragraph{OWASP ANS.}
+The OWASP Agent Name Service~\cite{owasp-ans} proposes a DNS-like discovery layer for AI agents, mapping human-readable names to agent metadata including capabilities and trust signals.
+ANS focuses on discovery and does not provide cryptographic identity lifecycle (key rotation, pre-rotation, equivocation detection).
+Autonym's alias system and \texttt{/.well-known/autonym} endpoint serve a similar discovery function, but identity is grounded in self-certifying \aid{}s rather than a naming service.
+
+\paragraph{ERC-8004.}
+ERC-8004~\cite{erc8004} defines an Ethereum-based agent identity standard, binding agent identity to on-chain state.
+This provides immutability and global consensus at the cost of Ethereum dependency (gas fees, transaction latency, chain availability).
+Autonym's architecture explicitly avoids blockchain as a runtime dependency, though it supports optional anchoring of \kel{} Merkle roots to a chain for additional assurance.
+
+%% ─────────────────────────────────────────────────────────────────
+\subsection{Gap Analysis}\label{sec:rw-gap}
+
+No single existing protocol combines
+(i)~self-certifying identifiers with
+(ii)~mandatory pre-rotation,
+(iii)~witness-based equivocation detection,
+(iv)~built-in end-to-end encrypted messaging with per-message forward secrecy,
+(v)~agent-specific attestations (operator claims, behavioural metrics, vouches), and
+(vi)~compact deterministic encoding with set-reconciliation sync.
+KERI provides~(i)--(iii) but lacks~(iv)--(vi).
+Nostr provides relay-based messaging and Negentropy sync but lacks~(i)--(v).
+DIDComm provides messaging for DID holders but lacks mandatory pre-rotation, witnesses, and agent attestations.
+AT Protocol provides rotation via a custodial directory but sacrifices self-sovereignty.
+
+Autonym is positioned as a synthesis:
+KERI's identity rigor (mandatory pre-rotation, witness receipts, self-certifying \aid{}s) combined with Nostr's operational simplicity (anyone can run a node, Negentropy reconciliation), augmented with built-in messaging, agent-specific attestations in a dedicated \tal{}, and compact CBOR~\cite{rfc8949} encoding throughout.
+\tabref{tab:comparison} in \secref{sec:comparison} provides a feature-level comparison.

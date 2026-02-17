@@ -1,0 +1,75 @@
+\section{Threat Model}\label{sec:threat-model}
+
+We define the adversary's capabilities, the trust assumptions under which the protocol operates, and the security goals that the Autonym protocol is designed to achieve.
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Adversary Model}\label{sec:adversary}
+
+We adopt a modified Dolev--Yao network adversary~\cite{dolev-yao} with the following capabilities:
+
+\begin{enumerate}
+  \item \textbf{Full network control.}  The adversary can intercept, delay, inject, replay, and reorder any message on any network link.  No channel is assumed to be secure at the transport layer; all security properties must hold at the protocol layer.
+
+  \item \textbf{Selective key compromise.}  The adversary can compromise the signing key~$\sk$ of individual agents, but cannot simultaneously compromise all agents' keys.  Compromise of $\sk$ gives the adversary the ability to sign messages and events as the compromised agent for the duration of the compromise.
+
+  \item \textbf{Bounded witness compromise.}  For any given agent with witness set~$\wset$ and threshold~$\wt$, the adversary can compromise at most $f < \wt$ witnesses.  That is, an honest majority of witnesses (at least $\wt$ out of $|\wset|$) is maintained for each agent.
+
+  \item \textbf{Computational bounds.}  The adversary is probabilistic polynomial-time (PPT) and cannot break the following cryptographic assumptions:
+  \begin{itemize}
+    \item \emph{Ed25519}: existential unforgeability under adaptive chosen-message attack (EUF-CMA)~\cite{euf-cma,ed25519-security};
+    \item \emph{BLAKE3}: collision resistance (finding $m \neq m'$ with $\hash{m} = \hash{m'}$) and preimage resistance~\cite{blake3};
+    \item \emph{XChaCha20-Poly1305}: indistinguishability under chosen-plaintext attack (IND-CPA) and ciphertext integrity (INT-CTXT)~\cite{rfc8439,xchacha}.
+  \end{itemize}
+\end{enumerate}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Trust Assumptions}\label{sec:trust-assumptions}
+
+The Autonym protocol relies on the following trust assumptions, which are strictly weaker than those of centralized identity systems:
+
+\begin{enumerate}
+  \item \textbf{Witness honesty.}  For each agent, at least $\wt$ out of $|\wset|$ witnesses faithfully execute the protocol: they verify events against the stored \kel, follow the first-seen-first-signed rule, and issue receipts honestly.  Colluding witnesses below this threshold cannot forge a valid event history.
+
+  \item \textbf{Fresh inception key.}  The Ed25519 keypair generated at inception is freshly generated and has not been used in any other cryptographic context.  Reuse could allow cross-protocol attacks.
+
+  \item \textbf{Ephemeral key deletion.}  Agents delete ephemeral X25519 private keys ($\esk$) immediately after encrypting a message.  This is the operational assumption that enables forward secrecy: compromising the sender's long-term key after deletion does not reveal past ephemeral shared secrets.
+
+  \item \textbf{Loose clock synchronization.}  Agent and node clocks are synchronized to within $\pm 60$~seconds.  This assumption is used only for request authentication replay protection (timestamp-plus-nonce scheme) and does not affect \kel{} verification or event ordering, which rely on hash-chain sequencing rather than timestamps.
+\end{enumerate}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Security Goals}\label{sec:security-goals}
+
+We state eight security goals as named properties.  Each goal is referenced by its label throughout subsequent protocol description and security analysis.
+
+\begin{property}[Identifier Integrity]\label{goal:integrity}
+\textbf{G1.}  An \aid{} is cryptographically bound to the inception key material.  Formally, for any PPT adversary $\mathcal{A}$, the probability that $\mathcal{A}$ produces an inception event $e_0'$ with $\aid(e_0') = \aid(e_0)$ but $e_0'.\fld{k} \neq e_0.\fld{k}$ is negligible in the security parameter, assuming the collision resistance of BLAKE3.
+\end{property}
+
+\begin{property}[Pre-rotation Security]\label{goal:prerotation}
+\textbf{G2.}  Compromise of the current signing key~$\sk$ alone is insufficient to perform a key rotation.  Any valid rotation event at sequence $s$ must present a new key~$\pk'$ satisfying $\hash{\pk'} = e_{s-1}.\fld{n}$, where $e_{s-1}.\fld{n}$ is the pre-rotation commitment from the previous event.  An adversary who knows~$\sk$ but not~$\npk$ cannot produce such a $\pk'$, assuming the preimage resistance of BLAKE3.
+\end{property}
+
+\begin{property}[Deactivation Resistance]\label{goal:deactivation}
+\textbf{G3.}  Compromise of the current signing key alone is insufficient to deactivate an identity.  Deactivation requires dual signatures: $\fld{sig} = \sig{\sk}{\fld{d}}$ (current key) and $\fld{ns} = \sig{\nsk}{\fld{d}}$ (pre-rotated next key).  An adversary holding only~$\sk$ cannot produce the second signature, assuming the EUF-CMA security of Ed25519.
+\end{property}
+
+\begin{property}[Equivocation Detection]\label{goal:equivocation}
+\textbf{G4.}  If an adversary (or compromised agent) publishes two conflicting events $e_s$ and $e_s'$ at the same sequence number $s$, this fork is detectable provided at least $\wt$ witnesses are honest.  Honest witnesses follow the first-seen-first-signed rule and will refuse to receipt the second event; the existence of inconsistent receipts constitutes a \emph{duplicity notice} that any verifier can check.
+\end{property}
+
+\begin{property}[Message Confidentiality]\label{goal:confidentiality}
+\textbf{G5.}  End-to-end encrypted messages are unreadable by intermediate nodes.  Specifically, given a ciphertext $c = \enc{K}{N}{m}$ where $K = \kdf{\xdh{\esk}{\pk_R}}$, neither the sending node, the recipient's home node, nor any network observer can recover $m$ without access to the recipient's X25519 private key, assuming the IND-CPA security of XChaCha20-Poly1305.
+\end{property}
+
+\begin{property}[Forward Secrecy]\label{goal:forward-secrecy}
+\textbf{G6.}  Compromise of an agent's long-term signing key after a message has been sent does not reveal the message contents.  Each message is encrypted under a fresh ephemeral X25519 keypair $(\esk, \epk)$; the sender deletes~$\esk$ immediately after encryption.  Recovery of $\sk$ after deletion does not yield the ephemeral shared secret $\xdh{\esk}{\pk_R}$.
+\end{property}
+
+\begin{property}[Replay Protection]\label{goal:replay}
+\textbf{G7.}  Stale or replayed agent-to-node requests are rejected.  The authentication scheme requires a timestamp within $\pm 60$~seconds and a random 16-byte nonce unique within a 120-second rolling window.  Nodes reject any request with an expired timestamp or a previously-observed nonce, assuming loose clock synchronization (\secref{sec:trust-assumptions}).
+\end{property}
+
+\begin{property}[AEAD Binding]\label{goal:aead}
+\textbf{G8.}  Ciphertext is non-transplantable between conversations.  The AEAD associated data includes the sender \aid, recipient \aid, timestamp, and ephemeral public key: $\mathit{AD} = \cbordet{\{\fld{from},\, \fld{to},\, \fld{ts},\, \epk\}}$.  Any attempt to replay or transplant a ciphertext into a different conversational context (different sender, recipient, or session) will fail Poly1305 tag verification.
+\end{property}

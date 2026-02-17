@@ -1,0 +1,95 @@
+\section{Introduction}\label{sec:introduction}
+
+The proliferation of autonomous AI agents---software entities that
+interact with services, other agents, and humans on behalf of their
+operators---has created an urgent need for portable, cryptographically
+verifiable identity infrastructure.
+Current approaches tie agent identity to specific platforms: if the
+platform disappears, every agent's identity dies with it.
+Cross-platform identity verification is impossible when each platform
+maintains its own siloed registry.
+Key compromise under most existing schemes results in permanent identity
+loss, with no recovery path that does not involve trusting a central
+authority.
+Furthermore, two agents whose sessions do not overlap have no standard
+mechanism for asynchronous, encrypted communication.
+
+Existing decentralised identity protocols address subsets of these
+problems.
+KERI~\cite{keri,keri-ietf} introduced self-certifying identifiers with
+key event logs, pre-rotation, and witnesses, but provides no built-in
+messaging and uses a specialised encoding (CESR) that limits adoption.
+Nostr~\cite{nostr} offers simple relay-based communication but lacks key
+rotation entirely.
+The AT Protocol~\cite{atproto} relies on a custodial PLC directory.
+W3C DIDs~\cite{did-core} provide a broad framework, but security
+properties vary dramatically across DID methods, and most methods still
+depend on external registries.
+DIDComm~\cite{didcomm} layers messaging atop DIDs but does not provide
+per-message forward secrecy.
+None of these protocols combine self-certifying identity, mandatory
+pre-rotation, witness-based equivocation detection, end-to-end encrypted
+messaging with forward secrecy, and agent-specific attestations in a
+single coherent design.
+
+\paragraph{Contributions.}
+This paper presents \textbf{Autonym}, a protocol that addresses the full
+spectrum of AI agent identity requirements.  Our contributions are:
+
+\begin{enumerate}[label=\textbf{C\arabic*:},leftmargin=2.5em]
+  \item \textbf{Self-certifying identity with mandatory pre-rotation and
+        dual-signature deactivation.}
+        Autonym identifiers (\aid{}s) are BLAKE3 digests of the inception
+        event, requiring no external registry.
+        Pre-rotation is unconditional: every event commits to the next
+        public key hash.
+        Deactivation requires signatures from both the current and
+        pre-committed keys, preventing an attacker with only the current
+        key from destroying the identity (\secref{sec:aid-derivation},
+        \secref{sec:kel}).
+
+  \item \textbf{Separate Trust Attestation Log with privacy-tiered
+        behavioural metrics.}
+        A hash-chained \tal{} stores operator attestations, behavioural
+        observations (in three privacy tiers), and time-bounded vouches,
+        independently prunable from the \kel{}
+        (\secref{sec:tal}).
+
+  \item \textbf{End-to-end messaging with per-message forward secrecy.}
+        Each message is encrypted under a fresh ephemeral X25519 key
+        exchange, with XChaCha20-Poly1305 AEAD binding that prevents
+        ciphertext transplant attacks.
+        The sender deletes the ephemeral private key immediately after
+        encryption (\secref{sec:e2e-encryption}).
+
+  \item \textbf{Negentropy-based federated synchronisation.}
+        Node-to-node synchronisation uses Negentropy set
+        reconciliation~\cite{negentropy}, achieving $O(d \cdot \log(n/d))$
+        bandwidth for $d$ differences among $n$ total events
+        (\secref{sec:sync}).
+
+  \item \textbf{Compact deterministic encoding.}
+        All protocol data uses CBOR deterministic encoding~\cite{rfc8949}
+        with optional zstd compression~\cite{rfc8478}, achieving 86\%
+        storage reduction over equivalent JSON representations
+        (\secref{sec:performance}).
+
+  \item \textbf{Formal threat model and security analysis.}
+        We define eight security goals under a modified Dolev--Yao
+        adversary model~\cite{dolev-yao} and provide informal but rigorous
+        arguments for each, grounded in standard cryptographic assumptions
+        (\secref{sec:threat-model}, \secref{sec:security-analysis}).
+\end{enumerate}
+
+\paragraph{Organisation.}
+\secref{sec:related-work} surveys related work.
+\secref{sec:preliminaries} introduces notation and cryptographic
+preliminaries.
+\secref{sec:threat-model} defines the threat model and security goals.
+\secref{sec:protocol} describes the protocol in detail.
+\secref{sec:security-analysis} analyses each security goal.
+\secref{sec:performance} evaluates storage, bandwidth, and compression.
+\secref{sec:comparison} compares Autonym to existing protocols.
+\secref{sec:implementation} outlines the reference implementation.
+\secref{sec:conclusion} concludes with future work.
+Appendices provide test vectors, error codes, and CBOR schemas.

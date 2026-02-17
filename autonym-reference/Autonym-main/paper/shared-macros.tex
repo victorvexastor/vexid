@@ -1,0 +1,73 @@
+% shared-macros.tex — Notation contract for the Autonym paper
+% All agents MUST use these macros. No bare symbols.
+
+% ─── Packages (loaded in main.tex, listed here for reference) ───
+
+% ─── Identifier Formatting ───
+\newcommand{\aid}{\textsf{AID}}
+\newcommand{\eid}[2]{\mathcal{E}_{#1}^{(#2)}}  % event i at sequence s
+\newcommand{\aidof}[1]{\textsf{AID}(#1)}         % AID of agent x
+
+% ─── Cryptographic Primitives ───
+\newcommand{\hash}[1]{\textsf{BLAKE3}(#1)}
+\newcommand{\sig}[2]{\textsf{Sign}_{#1}(#2)}
+\newcommand{\verify}[3]{\textsf{Verify}(#1,\, #2,\, #3)}
+\newcommand{\xdh}[2]{\textsf{X25519}(#1,\, #2)}  % DH key exchange (\dh and \DH are both reserved by LaTeX)
+\newcommand{\kdf}[1]{\textsf{HKDF-BLAKE3}(#1)}
+\newcommand{\enc}[3]{\textsf{XChaCha20}(#1,\, #2,\, #3)}
+
+% ─── Keys ───
+\newcommand{\pk}{\mathit{pk}}
+\newcommand{\sk}{\mathit{sk}}
+\newcommand{\npk}{\mathit{npk}}           % next pre-rotated public key
+\newcommand{\nsk}{\mathit{nsk}}           % next pre-rotated secret key
+\newcommand{\epk}{\mathit{epk}}           % ephemeral public key
+\newcommand{\esk}{\mathit{esk}}           % ephemeral secret key
+\newcommand{\nkh}{\mathit{nkh}}           % next key hash (pre-rotation commitment)
+
+% ─── Protocol Structures ───
+\newcommand{\kel}{\textsf{KEL}}
+\newcommand{\tal}{\textsf{TAL}}
+\newcommand{\wset}{\mathcal{W}}           % witness set
+\newcommand{\wt}{\mathit{wt}}             % witness threshold
+\newcommand{\cbor}[1]{\textsf{CBOR}(#1)}
+\newcommand{\cbordet}[1]{\textsf{CBOR}_{\det}(#1)}
+
+% ─── Event Types ───
+\newcommand{\inception}{\textsf{inception}}
+\newcommand{\rotation}{\textsf{rotation}}
+\newcommand{\deactivation}{\textsf{deactivation}}
+
+% ─── Fields ───
+\newcommand{\fld}[1]{\texttt{#1}}         % field name formatting
+
+% ─── Theorem-like Environments ───
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{property}{Property}[section]
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}[section]
+
+% ─── Misc Utilities ───
+\newcommand{\secref}[1]{Section~\ref{#1}}
+\newcommand{\defref}[1]{Definition~\ref{#1}}
+\newcommand{\propref}[1]{Property~\ref{#1}}
+\renewcommand{\algref}[1]{Algorithm~\ref{#1}}
+\newcommand{\thmref}[1]{Theorem~\ref{#1}}
+\newcommand{\figref}[1]{Figure~\ref{#1}}
+\newcommand{\tabref}[1]{Table~\ref{#1}}
+\newcommand{\goalref}[1]{\textbf{G#1}}
+
+% ─── Security Goals (shorthand) ───
+\newcommand{\Gid}{\goalref{1}}            % Identifier integrity
+\newcommand{\Gpre}{\goalref{2}}           % Pre-rotation security
+\newcommand{\Gdeact}{\goalref{3}}         % Deactivation resistance
+\newcommand{\Gequiv}{\goalref{4}}         % Equivocation detection
+\newcommand{\Gconf}{\goalref{5}}          % Message confidentiality
+\newcommand{\Gfs}{\goalref{6}}            % Forward secrecy
+\newcommand{\Greplay}{\goalref{7}}        % Replay protection
+\newcommand{\Gaead}{\goalref{8}}          % AEAD binding

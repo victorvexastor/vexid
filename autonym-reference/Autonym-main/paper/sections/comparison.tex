@@ -1,0 +1,127 @@
+\section{Protocol Comparison}\label{sec:comparison}
+
+Table~\ref{tab:comparison} compares Autonym against five representative protocols across eight features critical to AI agent identity infrastructure.
+A checkmark (\checkmark) indicates native support, a dash (---) indicates absence, and a tilde ($\sim$) indicates partial or external support.
+Numeric superscripts detail Autonym's implementation; alphabetic superscripts note caveats for other protocols.
+
+\begin{table*}[t]
+\centering
+\caption{Feature comparison of identity and messaging protocols for AI agents.}
+\label{tab:comparison}
+\small
+\begin{tabular}{@{}l c c c c c c@{}}
+\toprule
+\textbf{Feature} & \textbf{Autonym} & \textbf{KERI} & \textbf{Nostr} & \textbf{AT Proto} & \textbf{ActivityPub} & \textbf{DIDComm} \\
+\midrule
+Self-certifying IDs
+  & \checkmark\textsuperscript{1} & \checkmark & \checkmark\textsuperscript{a} & ---\textsuperscript{b} & --- & $\sim$\textsuperscript{c} \\
+Mandatory pre-rotation
+  & \checkmark\textsuperscript{2} & $\sim$\textsuperscript{d} & --- & --- & --- & --- \\
+Witness equivocation detection
+  & \checkmark\textsuperscript{3} & \checkmark & --- & --- & --- & --- \\
+Built-in messaging
+  & \checkmark\textsuperscript{4} & --- & \checkmark & \checkmark\textsuperscript{e} & \checkmark & \checkmark \\
+E2E encryption w/ forward secrecy
+  & \checkmark\textsuperscript{5} & --- & $\sim$\textsuperscript{f} & --- & --- & $\sim$\textsuperscript{g} \\
+Agent attestations
+  & \checkmark\textsuperscript{6} & --- & --- & --- & --- & --- \\
+Deterministic encoding
+  & \checkmark\textsuperscript{7} & \checkmark\textsuperscript{h} & --- & --- & --- & --- \\
+Set reconciliation sync
+  & \checkmark\textsuperscript{8} & --- & \checkmark\textsuperscript{i} & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.5em}
+\raggedright\footnotesize
+\textit{Autonym implementation details ---}\\
+\textsuperscript{1} BLAKE3-based AID derived from the inception event's canonical CBOR encoding (\secref{sec:aid-derivation}); 32-byte Ed25519 keys.\\
+\textsuperscript{2} Required at inception and every rotation; deactivation requires dual signatures from current and pre-committed next key (\secref{sec:kel}).\\
+\textsuperscript{3} Threshold-based with aggregate receipts; witnesses are index-referenced in the event's $\fld{w}$ array, reducing per-receipt overhead by 53--75\% (\secref{sec:witnesses}).\\
+\textsuperscript{4} Store-and-forward via home nodes; typed (MIME), threaded, 256\,KiB body limit; local and federated delivery (\secref{sec:messaging}).\\
+\textsuperscript{5} Per-message ephemeral X25519 key exchange, HKDF-BLAKE3 derivation, XChaCha20-Poly1305 AEAD with conversation-bound associated data (\secref{sec:e2e-encryption}).\\
+\textsuperscript{6} Separate TAL with dual-signed operator attestations, privacy-tiered behavioural metrics (Tier~1 boolean, Tier~2 bucketed, Tier~3 never published), and confidence-weighted vouches (\secref{sec:tal}).\\
+\textsuperscript{7} CBOR deterministic encoding (RFC~8949~\S4.2)~\cite{rfc8949} with optional zstd compression; inception event $\approx$340\,B CBOR, $\approx$85\,B compressed (86\% reduction).\\
+\textsuperscript{8} Negentropy-based set reconciliation adopted from Nostr NIP-77~\cite{negentropy,nip77}; $O(d \cdot \log(n/d))$ bandwidth (\secref{sec:sync}).\\[0.3em]
+\textit{Other protocol caveats ---}\\
+\textsuperscript{a} Nostr identities are bare secp256k1 public keys---self-certifying but without lifecycle management (NIP-41 key rotation remains draft).\\
+\textsuperscript{b} AT Protocol uses \texttt{did:plc} with a custodial PLC directory; identifiers are not derived solely from key material.\\
+\textsuperscript{c} DIDComm operates atop DIDs, whose self-certifying properties depend on the DID method used (\texttt{did:key} is self-certifying; \texttt{did:web} is not).\\
+\textsuperscript{d} KERI supports pre-rotation but does not mandate it; identifiers may be created without a next-key commitment.\\
+\textsuperscript{e} AT Protocol messaging is mediated through PDS infrastructure via Lexicon schemas (e.g., Bluesky DMs), not a standalone messaging layer.\\
+\textsuperscript{f} Nostr NIP-44 provides encrypted direct messages using XChaCha20-Poly1305 but without per-message ephemeral key exchange for forward secrecy.\\
+\textsuperscript{g} DIDComm v2 supports encryption via ECDH-ES+A256KW but does not mandate per-message ephemeral key exchange for forward secrecy.\\
+\textsuperscript{h} KERI uses CESR (Composable Event Streaming Representation), a custom deterministic text-binary hybrid encoding optimised for streaming.\\
+\textsuperscript{i} Nostr NIP-77 uses Negentropy-based set reconciliation~\cite{negentropy,nip77}.
+\end{table*}
+
+\subsection{Feature Discussion}\label{sec:comparison-discussion}
+
+\paragraph{Self-certifying identifiers.}
+A self-certifying identifier is derived deterministically from the holder's key material, eliminating dependence on external registries or certificate authorities.
+In Autonym, the \aid{} is the base58-encoded, 256-bit BLAKE3 hash of the inception event's canonical CBOR encoding (\algref{alg:aid-derivation}).
+The derivation uses a two-pass process: the first pass computes the \aid{} over the event content with self-referential fields zeroed; the second pass computes the event digest~$\fld{d}$ with the \aid{} populated (\defref{def:aid-valid}).
+This property is essential for AI agents, which may operate across organisational boundaries and must prove identity without relying on any single platform's database.
+Nostr's bare secp256k1 keys are self-certifying in the same sense but lack lifecycle management---there is no standard mechanism for key rotation or recovery.
+AT Protocol's \texttt{did:plc} identifiers are bound to a centralised PLC directory, sacrificing the self-certifying property.
+
+\paragraph{Mandatory pre-rotation.}
+Pre-rotation commits to the hash of the next public key ($\nkh = \hash{\npk}$) at each event, ensuring that a compromised current key cannot produce a valid rotation (\secref{sec:kel}).
+Every Autonym inception and rotation event \textbf{must} include the \fld{n} field; there is no opt-out.
+Rotation is verified unconditionally: $\hash{\pk'} = \nkh_{\text{prev}}$, and is signed by the \emph{previous} key to prove authorisation (\algref{alg:kel-verify}, line~16).
+Deactivation further requires dual signatures---both the current key ($\fld{sig}$) and the pre-committed next key ($\fld{ns}$)---preventing a key-compromise attacker from destroying the identity (\algref{alg:kel-verify}, lines~21--22).
+KERI introduced pre-rotation~\cite{keri-prerotation} but does not require it, leaving some KERI identifiers vulnerable to key compromise without recovery.
+For AI agents, mandatory pre-rotation is particularly important: agents may run on shared infrastructure where key material is at higher risk of exfiltration, and automated key rotation (without human intervention) requires a deterministic, pre-committed recovery path.
+
+\paragraph{Witness-based equivocation detection.}
+Witnesses co-sign key events and enforce a first-seen-first-signed rule (\defref{def:fsfs}): if a controller publishes conflicting events at the same sequence number, the fork is detectable through inconsistent witness receipts (\algref{alg:witness}).
+Autonym uses index-based aggregate receipts---each receipt is a pair $(j, \sigma_j)$ referencing the witness's index in the event's $\fld{w}$ array---reducing per-receipt overhead by 53--75\% compared to full \aid{} references.
+The witness threshold $\wt$ must satisfy $1 \le \wt \le |\wset|$; the recommended value is $\wt \ge \lceil |\wset|/2 \rceil + 1$.
+When the witness set changes during rotation, receipts from $\wt$ of the \emph{outgoing} witness set are required, preventing silent witness replacement.
+Among the compared protocols, only KERI and Autonym provide witness-based equivocation detection.
+For AI agents interacting across trust boundaries, equivocation detection is critical: an agent that appears to hold different keys to different counterparts could sign contradictory commitments, making witness-based consistency a prerequisite for multi-party agent workflows.
+
+\paragraph{Built-in messaging.}
+Autonym integrates store-and-forward messaging directly into the protocol (\secref{sec:messaging}): agents send and receive CBOR-encoded, Ed25519-signed messages through their home nodes with at-least-once delivery semantics.
+Messages are limited to 256\,KiB and carry a unique 16-byte identifier for idempotent duplicate handling.
+Both local delivery (sender and recipient on the same node) and federated delivery (cross-node via \texttt{POST /federate/message}) are supported, with discovery via routing hints, cached \kel{}s, or peer queries.
+Push delivery is available via WebSocket (\texttt{/messages/stream}) or webhooks.
+KERI deliberately excludes messaging; Nostr and ActivityPub provide messaging but without self-certifying identity lifecycle management; DIDComm provides messaging but requires separate DID resolution infrastructure.
+Coupling identity and messaging in a single protocol reduces the integration surface for AI agents: there is no gap between ``who is this agent?'' and ``how do I reach it?''---both answers derive from the same \kel.
+
+\paragraph{End-to-end encryption with forward secrecy.}
+Autonym provides per-message forward secrecy through ephemeral X25519 key exchange (\algref{alg:e2e}): each message generates a fresh X25519 keypair (32-byte public key), performs a Diffie-Hellman exchange with the recipient's X25519 public key (derived from their Ed25519 identity key via the RFC~8032~\cite{rfc8032} birational mapping), derives a 32-byte symmetric key via $\kdf{\mathit{ss},\; \mathit{salt},\; \texttt{"autonym-e2e-v1"}}$, and encrypts with XChaCha20-Poly1305~\cite{xchacha} using a random 24-byte nonce.
+The associated data binds ciphertext to conversation metadata (sender \aid, recipient \aid, timestamp, ephemeral public key), preventing ciphertext transplant attacks~\cite{rfc8439}.
+The ephemeral private key is deleted immediately after encryption, ensuring forward secrecy: compromising the sender's long-term key does not reveal past messages.
+This stateless, per-message approach suits AI agents that may restart, scale horizontally, or lack persistent session storage---unlike the Signal Double Ratchet~\cite{signal-protocol}, which requires synchronised session state between parties.
+Nostr's NIP-44 and DIDComm's ECDH-ES provide encryption but do not mandate per-message ephemeral exchange.
+
+\paragraph{Agent attestations.}
+Autonym's Trust Attestation Log (\tal{}, \secref{sec:tal}) supports three attestation types, each hash-chained and bound to a specific \kel{} state via $\fld{kel\_s}$ and $\fld{kel\_d}$:
+\emph{operator attestations} bind an agent to a named operator with dual signatures (agent key and independent operator key $\pk_{\text{op}}$);
+\emph{behavioural attestations} report observed agent behaviour using three privacy tiers (\defref{def:privacy-tiers})---Tier~1 (boolean flags), Tier~2 (bucketed ranges), and Tier~3 (raw metrics, never published);
+\emph{vouches} provide confidence-weighted endorsements ($\fld{confidence} \in [0,1]$) with optional expiry.
+No other compared protocol provides agent-specific attestation structures.
+
+\paragraph{Deterministic encoding.}
+Deterministic serialisation---where a given logical object has exactly one valid byte representation---eliminates canonicalisation attacks and simplifies signature verification.
+Autonym uses CBOR deterministic encoding~\cite{rfc8949} (RFC~8949~\S4.2) for all protocol data: key events, attestations, messages, and receipts.
+An inception event is approximately 340~bytes in CBOR versus ${\sim}650$~bytes in equivalent JSON; with zstd compression using a trained dictionary~\cite{rfc8478}, this drops to ${\sim}50$--85~bytes.
+KERI uses CESR, a custom text-binary hybrid encoding with broader type support but less ecosystem tooling.
+Protocols based on JSON (Nostr, ActivityPub, DIDComm) must canonicalise before signing, introducing potential ambiguity.
+For AI agents that must verify signatures across diverse runtime environments (cloud, edge, WASM), deterministic encoding removes an entire class of interoperability bugs: the same event always produces the same bytes, regardless of the serialisation library used.
+
+\paragraph{Set reconciliation sync.}
+Negentropy-based set reconciliation~\cite{negentropy,nip77} enables two nodes to discover their differences in $O(d \cdot \log(n/d))$ bandwidth, where $d$ is the number of missing items and $n$ is the total set size (\secref{sec:sync}).
+Missing events are transferred as CBOR Sequences~\cite{rfc8742}, optionally zstd-compressed.
+This reduces multi-agent sync from $O(\text{agents})$ individual round-trips to $O(1)$ negotiation rounds.
+Per-AID delta sync (\texttt{?from\_seq=N}) remains available for single-agent resolution.
+Both Autonym and Nostr (NIP-77) adopt Negentropy; other protocols rely on per-item polling or full replication.
+For AI agents deployed across federated infrastructure, efficient sync is essential: an agent that migrates between nodes or recovers from downtime must reconcile its event history without transferring the entire log.
+
+\paragraph{Quantitative profile.}
+Autonym's choice of CBOR deterministic encoding with zstd compression yields compact wire representations suitable for resource-constrained deployments.
+An inception event is $\approx$340~bytes in CBOR (versus $\approx$650~bytes in equivalent JSON), compressing to $\approx$50--85~bytes with a trained zstd dictionary---an 86\% reduction overall.
+Ed25519 public keys are 32~bytes; signatures are 64~bytes; BLAKE3 digests are 32~bytes.
+Per-message E2E encryption adds 56~bytes of overhead: one ephemeral X25519 public key (32~bytes) and one XChaCha20 nonce (24~bytes).
+At scale, a node hosting one million agents with five events each stores $\approx$5~GB compressed, compared to $\approx$35~GB in uncompressed JSON---enabling commodity hardware deployment without dedicated storage infrastructure.

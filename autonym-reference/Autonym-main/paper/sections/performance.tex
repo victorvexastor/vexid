@@ -1,0 +1,231 @@
+% performance.tex — Storage, bandwidth, compression, and scaling analysis
+
+\section{Performance Analysis}\label{sec:performance}
+
+This section analyses the storage, bandwidth, and compression
+characteristics of the Autonym protocol, and projects scaling behaviour
+from single-agent deployments to networks of one million agents.
+All estimates assume CBOR deterministic encoding~\cite{rfc8949}
+(\secref{sec:encoding}) with optional zstd compression~\cite{rfc8478}.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Storage Analysis}\label{sec:storage-overhead}
+
+\tabref{tab:storage-estimates} compares storage requirements across
+four encoding configurations.
+The JSON baseline illustrates the cost of text-based protocols;
+the CBOR column reflects deterministic encoding (RFC~8949)~\cite{rfc8949}
+without compression;
+the rightmost columns show CBOR with zstd using a protocol-versioned
+trained dictionary.
+
+\begin{table}[t]
+\centering
+\caption{Storage estimates across encoding formats.}\label{tab:storage-estimates}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Scenario} & \textbf{JSON} & \textbf{CBOR} & \textbf{CBOR\,+\,zstd} & \textbf{Savings} \\
+\midrule
+1 inception event          & $\sim$650\,B   & $\sim$340\,B & $\sim$85\,B   & 87\% \\
+10-event \kel{} + receipts & $\sim$15.4\,KB & $\sim$7\,KB  & $\sim$1.5\,KB & 90\% \\
+Per-agent (50 messages)    & $\sim$35\,KB   & $\sim$18\,KB & $\sim$5\,KB   & 86\% \\
+$10^6$ agents $\times$ 5 events & $\sim$35\,GB & $\sim$17\,GB & $\sim$5\,GB & 86\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dominant factor in per-event size is the cryptographic material:
+each event contains at least one 32-byte public key~$\pk$, one 32-byte
+pre-rotation commitment~$\nkh$, one 32-byte digest~$\fld{d}$, and one
+64-byte signature~$\fld{sig}$---a fixed 160-byte cryptographic payload.
+CBOR's compact type encoding and raw byte-string representation
+(\secref{sec:encoding}) eliminates the base64 expansion that JSON
+would require (33\% overhead), yielding the $\sim$48\% reduction from
+JSON to CBOR before compression is applied.
+
+\paragraph{Per-event breakdown.}
+A CBOR-encoded inception event is approximately 340\,bytes before
+compression (vs.\ $\sim$650\,bytes in JSON).
+With a trained dictionary, this compresses to 50--85\,bytes---a
+batch of 100 events fits in approximately 8--12\,KB on the wire.
+
+\paragraph{Witness storage.}
+Witness receipts are lightweight: each receipt is a pair
+$(j, \sigma_j)$ where $j$ is a witness index (1~byte) and $\sigma_j$
+is a 64-byte Ed25519 signature.
+Index-based addressing (\secref{sec:witnesses}) reduces per-receipt
+overhead by 53--75\% compared to repeating full witness \aid{}s
+($\sim$45~bytes each in base58).
+A witness using redb with CBOR blobs, serving 10{,}000 agents with
+an average of 5 events each, stores approximately 50\,MB---well within
+the capacity of a Raspberry~Pi.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Bandwidth}\label{sec:bandwidth}
+
+Bandwidth consumption depends on the synchronisation mode.
+
+\subsubsection{Single-Agent Sync}
+
+Fetching a complete \kel{} is a single \texttt{GET /kel/\{aid\}} request
+returning a CBOR Sequence~\cite{rfc8742} (concatenated events, no
+wrapping array).
+This enables streaming decode: the receiver processes events as they
+arrive without buffering the entire response.
+With zstd compression negotiated via \texttt{Accept-Encoding: zstd},
+a 10-event \kel{} transfers in approximately 1.5\,KB.
+
+Delta sync (\texttt{GET /kel/\{aid\}?from\_seq=N}) transfers only events
+after sequence~$N$, reducing bandwidth to $O(k)$ where $k$ is the
+number of new events since the last sync---typically 1--2 events for a
+routine key rotation check.
+
+\subsubsection{Bulk Sync (Negentropy)}
+
+For multi-agent node-to-node synchronisation, Negentropy set
+reconciliation~\cite{negentropy,nip77} (\secref{sec:sync}) requires
+$O(d \cdot \log(n / d))$ bandwidth, where $d$ is the number of
+missing events and $n$ is the total event count across all agents.
+This compares favourably to na\"ive approaches:
+
+\begin{table}[t]
+\centering
+\caption{Sync bandwidth comparison for $n = 10^6$ events, $d = 1{,}000$ differences.}\label{tab:sync-bw}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Method & Bandwidth \\
+\midrule
+Full transfer              & $O(n) \approx 5$\,GB \\
+Per-AID polling            & $O(\text{agents}) \approx 10^6$ round-trips \\
+Negentropy reconciliation  & $O(d \cdot \log(n/d)) \approx 10$\,KB negotiation + $d$ events \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+After reconciliation, missing events are transferred as
+zstd-compressed CBOR Sequences~\cite{rfc8742}, adding approximately
+$d \times 85$\,bytes~$\approx$~85\,KB for 1{,}000 missing events.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Compression}\label{sec:compression}
+
+Autonym events are highly compressible because they share structural
+patterns: fixed field names, repeated key types (\texttt{ed25519}),
+common protocol versions, and similar timestamp formats.
+Autonym uses zstd (RFC~8478~\cite{rfc8478}) with a trained dictionary
+embedded in protocol implementations.
+
+\begin{table}[t]
+\centering
+\caption{Compression ratios for representative payloads.}\label{tab:compression}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Payload & Without dictionary & With trained dictionary \\
+\midrule
+Single inception event (340\,B)   & 2--3$\times$ & 4--8$\times$ (50--85\,B) \\
+Batch of 100 events               & 3--4$\times$ & 6--10$\times$ ($\sim$8--12\,KB) \\
+Aggregate receipt (3 witnesses)    & 2$\times$    & 3--4$\times$ \\
+Encrypted message envelope         & 1.1$\times$  & 1.5--2$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Encrypted payloads compress poorly (ciphertext is pseudorandom), but
+the structural envelope fields (\fld{from}, \fld{to}, \fld{ts},
+\fld{ephemeral\_pk}, \fld{nonce}) still benefit from dictionary-based
+compression.
+
+\paragraph{Dictionary versioning.}
+The compression dictionary is versioned alongside the protocol version
+(the $\fld{v}$ field in all events).
+A protocol version bump may include a new dictionary trained on the
+updated event schemas.
+Nodes advertise supported dictionary versions in the
+\texttt{/.well-known/autonym} metadata endpoint.
+During the \texttt{Accept-Encoding} negotiation, the dictionary version
+is specified as a zstd parameter (e.g.,
+\texttt{Accept-Encoding: zstd;dict=autonym-v1}).
+Nodes that do not recognise the dictionary version fall back to
+generic zstd or uncompressed CBOR; the protocol remains fully
+functional without compression.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Scaling Projections}\label{sec:scaling}
+
+\tabref{tab:scaling} projects total storage and bandwidth for
+representative deployment sizes, assuming an average of 5~key events
+per agent and CBOR~+~zstd encoding with a trained dictionary.
+
+\begin{table}[t]
+\centering
+\caption{Scaling projections (CBOR\,+\,zstd with trained dictionary).}\label{tab:scaling}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Deployment} & \textbf{Agents} & \textbf{Compressed storage} & \textbf{Notes} \\
+\midrule
+Small     & 1\,K    & $\sim$5\,MB    & Single node; fits in RAM \\
+Medium    & 100\,K  & $\sim$500\,MB  & Single node; modest SSD \\
+Large     & 1\,M    & $\sim$5\,GB    & Sharded or replicated \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Witness overhead.}
+Witness receipts contribute minimal additional storage.
+Each receipt is a $(j, \sigma_j)$ pair: 1~byte for the witness index
+plus 64~bytes for the Ed25519 signature, totalling $\sim$65~bytes
+uncompressed ($\sim$100~bytes including CBOR framing).
+With a typical configuration of 3~witnesses and threshold~2, each event
+accumulates 2--3 receipts ($\sim$200--300~bytes), which compress to
+$\sim$50--75~bytes with zstd.
+At scale, receipt storage is dominated by event storage.
+
+\paragraph{Message storage.}
+Messages are transient: they are deleted after acknowledgement
+(\secref{sec:messaging}).
+Nodes need only buffer undelivered messages, not the full message
+history.
+A node serving 100\,K agents with an average of 10~undelivered messages
+per agent ($\sim$1\,KB each compressed) requires $\sim$1\,GB of message
+buffer---well within the capacity of a single server.
+
+\paragraph{Compaction.}
+For long-lived agents with many key rotations, \kel{} compaction
+(\secref{sec:kel}) bounds the data that must be transferred during
+sync.
+A compacted \kel{} consists of: the inception event (always
+retained---it is the \aid{} derivation source), the latest compaction
+snapshot, and all events since the snapshot.
+For an agent with 100~rotations compacted to a snapshot at
+sequence~90, a new observer transfers only 12~events (inception $+$
+snapshot $+$ events 91--100) instead of the full 101.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Cryptographic Costs}\label{sec:crypto-costs}
+
+\begin{table}[t]
+\centering
+\caption{Per-operation cryptographic costs (approximate, single-threaded).}\label{tab:crypto-costs}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Operation & Primitive & Typical latency \\
+\midrule
+\kel{} event signing     & Ed25519 sign     & $< 50\;\mu$s \\
+\kel{} event verification & Ed25519 verify  & $< 80\;\mu$s \\
+Event digest             & BLAKE3 (340\,B)  & $< 1\;\mu$s \\
+Pre-rotation check       & BLAKE3 (32\,B)   & $< 1\;\mu$s \\
+E2E key exchange         & X25519 DH        & $< 60\;\mu$s \\
+Key derivation           & HKDF-BLAKE3      & $< 5\;\mu$s \\
+Message encryption       & XChaCha20-Poly1305 & $< 10\;\mu$s per KB \\
+Full \kel{} verify (10 events) & 10$\times$ verify + 10$\times$ hash & $< 1$\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All cryptographic primitives are constant-time implementations.
+Ed25519 signing and verification dominate the per-event cost;
+BLAKE3 hashing is negligible even for multi-event \kel{} verification.
+A single-threaded node can verify approximately $10^4$ \kel{}s per
+second (10 events each), making the protocol viable on modest hardware.

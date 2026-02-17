@@ -1,0 +1,592 @@
+% protocol.tex — Core protocol description (Section 5)
+% Transforms AUTONYM.md Sections 3–10 into formal protocol description.
+
+\section{Protocol Description}\label{sec:protocol}
+
+This section presents the Autonym protocol in detail.
+We define the identifier scheme, key event log structure, witness model,
+trust attestation log, message routing with end-to-end encryption, and
+the federated node architecture.
+All data structures use CBOR deterministic encoding~\cite{rfc8949} (\secref{sec:encoding}).
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Identifiers}\label{sec:aid-derivation}
+
+An Autonym Identifier (\aid) is a base58-encoded~\cite{base58},
+256-bit BLAKE3~\cite{blake3} digest derived deterministically from the
+agent's inception event.
+The derivation is a two-pass process that avoids circular dependency:
+the first pass computes the \aid{} over the event content with
+self-referential fields zeroed; the second pass computes the event
+digest~$\fld{d}$ with the \aid{} populated.
+
+\begin{algorithm}[t]
+\caption{AID Derivation}\label{alg:aid-derivation}
+\begin{algorithmic}[1]
+\Require Inception event $e_0$ with fields $\fld{k}$, $\fld{n}$, $\fld{w}$, $\fld{wt}$, $\fld{svc}$, $\fld{ts}$
+\Ensure  Valid \aid{} and event digest $\fld{d}$
+\State $e_0.\fld{aid} \gets \epsilon$ \Comment{Set \fld{aid} to empty bytes}
+\State $e_0.\fld{d} \gets \epsilon$ \Comment{Set \fld{d} to empty bytes}
+\State $b_1 \gets \cbordet{e_0 \setminus \{\fld{aid}, \fld{d}, \fld{sig}\}}$ \Comment{Canonical bytes, excluding self-referential fields}
+\State $e_0.\fld{aid} \gets \textrm{base58}\!\left(\hash{b_1}\right)$ \Comment{32-byte BLAKE3 digest, base58-encoded}
+\State $b_2 \gets \cbordet{e_0 \setminus \{\fld{d}, \fld{sig}\}}$ \Comment{Re-encode with \fld{aid} populated, \fld{d} still empty}
+\State $e_0.\fld{d} \gets \hash{b_2}$ \Comment{Event digest}
+\State $e_0.\fld{sig} \gets \sig{\sk}{e_0.\fld{d}}$ \Comment{Sign digest with inception key}
+\State \Return $(e_0.\fld{aid},\; e_0.\fld{d})$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{definition}[AID Validity]\label{def:aid-valid}
+An identifier $a = \texttt{aid:}\langle s \rangle$ is \emph{valid} with
+respect to an inception event~$e_0$ if and only if:
+\begin{enumerate}
+  \item $e_0.\fld{t} = \inception$,
+  \item $e_0.\fld{s} = 0$,
+  \item $\hash{\cbordet{e_0 \setminus \{\fld{aid}, \fld{d}, \fld{sig}\}}} =
+        \textrm{base58}^{-1}(s)$, and
+  \item $\verify{e_0.\fld{k}}{e_0.\fld{d}}{e_0.\fld{sig}} = \mathsf{true}$.
+\end{enumerate}
+\end{definition}
+
+The \aid{} is \emph{permanent}: it is derived from the inception event and
+does not change across key rotations.
+It is also \emph{self-certifying}: given the inception event, any party can
+recompute the \aid{} without contacting a registry or trusted third
+party~\cite{keri,keri-ietf}.
+Collision resistance follows from the 256-bit output of BLAKE3.
+
+\paragraph{Human-readable aliases.}
+Since raw AIDs are not human-friendly, Autonym supports optional aliases
+of the form \texttt{alias@node.example.com}.
+Aliases are registered per-node on a first-come, first-served basis and
+serve only as \emph{routing hints}---the \aid{} remains the canonical
+identity.  An agent may hold different aliases on different nodes.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Key Event Log}\label{sec:kel}
+
+The Key Event Log (\kel) is a hash-chained, signed, append-only sequence
+of key lifecycle events serialised in CBOR deterministic
+encoding~\cite{rfc8949}.
+Every event carries a self-referential digest~$\fld{d}$ computed as in
+\algref{alg:aid-derivation} (pass~2) and an Ed25519~\cite{rfc8032}
+signature~$\fld{sig}$ over that digest.
+
+\subsubsection{Event Schemas}
+
+\paragraph{Inception ($s = 0$).}
+The inception event establishes the identity:
+\begin{itemize}[nosep]
+  \item $\fld{v}$: protocol version (integer),
+  \item $\fld{t} = \inception$,
+  \item $\fld{aid}$: the \aid{} derived via \algref{alg:aid-derivation},
+  \item $\fld{s} = 0$: sequence number,
+  \item $\fld{kt}$: key type (\texttt{ed25519}),
+  \item $\fld{k}$: current Ed25519 public key $\pk$ (32~bytes),
+  \item $\fld{n}$: pre-rotation commitment $\nkh = \hash{\npk}$ (\textbf{required}),
+  \item $\fld{w}$: witness set $\wset$ (array of witness \aid{}s),
+  \item $\fld{wt}$: witness threshold~$\wt$,
+  \item $\fld{svc}$: service endpoints (home node URLs),
+  \item $\fld{ts}$: informational timestamp,
+  \item $\fld{d}$: event digest,
+  \item $\fld{sig} = \sig{\sk}{\fld{d}}$.
+\end{itemize}
+When $\wset \neq \emptyset$, the threshold must satisfy
+$1 \le \wt \le |\wset|$; the recommended value is
+$\wt \ge \lceil |\wset|/2 \rceil + 1$.
+
+\paragraph{Rotation ($s > 0$).}
+A rotation event transitions to a new key:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \rotation$; all inception fields carried forward, plus
+  \item $\fld{p}$: chain link---$\fld{d}$ of the immediately preceding event,
+  \item $\fld{k}$: the \emph{new} public key $\pk'$ (32~bytes),
+  \item $\fld{n}$: new pre-rotation commitment $\hash{\npk'}$ (\textbf{required}).
+\end{itemize}
+Pre-rotation is verified unconditionally: $\hash{\pk'} = \nkh_{\text{prev}}$,
+where $\nkh_{\text{prev}}$ is the $\fld{n}$ value from the preceding event.
+The rotation is signed by the \emph{previous} key~$\sk$, proving the
+current key-holder authorised the transition.
+When the witness set changes, the rotation event must include receipts
+from at least $\wt$ of the \emph{outgoing} witness set, preventing an
+attacker from silently replacing all witnesses~\cite{keri-prerotation}.
+Service endpoints in $\fld{svc}$ may be updated; if omitted, the previous
+values are inherited.
+
+\paragraph{Deactivation (terminal).}
+A deactivation event permanently freezes the identity:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \deactivation$,
+  \item $\fld{p}$: chain link,
+  \item $\fld{ns}$: Ed25519 signature of $\fld{d}$ by the pre-rotated next key (64~bytes),
+  \item $\fld{sig} = \sig{\sk}{\fld{d}}$ (current key signature).
+\end{itemize}
+Deactivation requires \emph{dual signatures}: $\fld{sig}$ from the current
+key and $\fld{ns}$ from the next pre-committed key.
+An attacker who compromises the current key alone cannot rotate (blocked by
+pre-rotation) \emph{and} cannot deactivate (blocked by the dual-signature
+requirement).  No further events are valid after deactivation.
+
+\subsubsection{KEL Verification}
+
+\begin{algorithm}[t]
+\caption{KEL Verification}\label{alg:kel-verify}\label{sec:kel-verification}
+\begin{algorithmic}[1]
+\Require Ordered event sequence $E = [e_0, e_1, \ldots, e_m]$
+\Ensure  Current public key $\pk_{\text{cur}}$ or rejection
+\State \textbf{assert} $e_0.\fld{t} = \inception \;\land\; e_0.\fld{s} = 0$
+\State \textbf{assert} $e_0.\fld{aid} = \textsc{DeriveAID}(e_0)$ \Comment{\algref{alg:aid-derivation}}
+\State \textbf{assert} $\verify{e_0.\fld{k}}{e_0.\fld{d}}{e_0.\fld{sig}}$
+\If{$e_0.\fld{w} \neq \emptyset$}
+  \State \textbf{assert} $1 \le e_0.\fld{wt} \le |e_0.\fld{w}|$
+\EndIf
+\State $\pk_{\text{cur}} \gets e_0.\fld{k}$;\quad $\nkh \gets e_0.\fld{n}$
+\For{$i \gets 1$ \textbf{to} $m$}
+  \State \textbf{assert} $e_i.\fld{p} = e_{i-1}.\fld{d}$ \Comment{Chain link}
+  \State \textbf{assert} $e_i.\fld{s} = i$ \Comment{Sequence continuity}
+  \State \textbf{assert} $\verify{\pk_{\text{cur}}}{e_i.\fld{d}}{e_i.\fld{sig}}$ \Comment{Signature by current key}
+  \If{$e_i.\fld{w} \neq \emptyset$}
+    \State \textbf{assert} $1 \le e_i.\fld{wt} \le |e_i.\fld{w}|$
+  \EndIf
+  \If{$e_i.\fld{t} = \rotation$}
+    \State \textbf{assert} $\hash{e_i.\fld{k}} = \nkh$ \Comment{Pre-rotation check}
+    \If{$e_i.\fld{w} \neq e_{i-1}.\fld{w}$} \Comment{Witness set changed}
+      \State \textbf{assert} outgoing witness receipts $\ge e_{i-1}.\wt$
+    \EndIf
+    \State $\pk_{\text{cur}} \gets e_i.\fld{k}$;\quad $\nkh \gets e_i.\fld{n}$
+  \ElsIf{$e_i.\fld{t} = \deactivation$}
+    \State Recover $\npk$ such that $\hash{\npk} = \nkh$ \Comment{Next key from $\fld{ns}$}
+    \State \textbf{assert} $\verify{\npk}{e_i.\fld{d}}{e_i.\fld{ns}}$ \Comment{Dual-signature check}
+    \State \Return $\bot$ \Comment{Identity frozen; no further events valid}
+  \EndIf
+\EndFor
+\State \Return $\pk_{\text{cur}}$
+\end{algorithmic}
+\end{algorithm}
+
+\algref{alg:kel-verify} requires \emph{zero trust} in any server---only
+the events themselves are needed.
+Chain linking (line~9) and sequence continuity (line~10) ensure append-only
+ordering; the pre-rotation check (line~16) ensures only the legitimate
+key-holder can advance the key state~\cite{keri-prerotation}; the
+dual-signature deactivation check (lines~21--22) prevents an attacker with
+the current key from destroying the identity.
+
+\subsubsection{KEL Compaction}
+
+Over time, a \kel{} accumulates events that are expensive to transfer in
+full.  Autonym supports \emph{epoch-based compaction}:
+\begin{itemize}[nosep]
+  \item A compaction snapshot records the current state: active key,
+        witness list, service endpoints, and cumulative receipt set.
+  \item Events before the compaction epoch may be summarised as an
+        aggregate.
+  \item A bandwidth-constrained sync transfers: the inception event
+        (always retained---it is the \aid{} derivation source) $+$ the
+        latest compaction snapshot $+$ all events since.
+  \item Compaction is \emph{node-local}: different nodes may compact at
+        different epochs.  The full \kel{} remains the source of truth
+        for complete verification.
+\end{itemize}
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Witness Model}\label{sec:witnesses}
+
+Without witnesses, a malicious node could present different \kel{}s to
+different observers (\emph{equivocation}).
+Witnesses co-sign (receipt) key events; conflicting events at the same
+sequence number produce detectable evidence of duplicity~\cite{keri}.
+
+\begin{algorithm}[t]
+\caption{Witness Protocol}\label{alg:witness}
+\begin{algorithmic}[1]
+\Require New key event $e$ for agent with witness set $\wset$ and threshold $\wt$
+\Ensure  Event $e$ with $\ge \wt$ witness receipts, or failure
+\State Agent creates event $e$ (inception or rotation)
+\For{each witness $w_j \in \wset$}
+  \State Agent submits $e$ to $w_j$
+  \State $w_j$ verifies $e$ against its local copy of the \kel{}
+  \If{$e$ is valid \textbf{and} no prior event exists at $e.\fld{s}$}
+    \State $r_j \gets (j,\; \sig{\sk_{w_j}}{e.\fld{d}})$ \Comment{Index-based receipt}
+    \State $w_j$ appends $e$ to its local \kel{} copy
+    \State $w_j$ returns $r_j$ to agent
+  \Else
+    \State $w_j$ rejects $e$ (or issues duplicity notice, see below)
+  \EndIf
+\EndFor
+\State Agent collects receipts $R = \{r_j\}$
+\State \textbf{assert} $|R| \ge \wt$ \Comment{Threshold met}
+\State Agent publishes $e$ with aggregate receipt $R$ to home node(s)
+\State Receiving nodes verify $e$ \textbf{and} verify $|R| \ge \wt$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Aggregate receipt format.}
+Receipts are stored in an index-based aggregate to minimise size.
+Each receipt is a pair $(j, \sigma_j)$ where $j$ is the witness's index
+in the event's $\fld{w}$ array and $\sigma_j = \sig{\sk_{w_j}}{e.\fld{d}}$.
+This reduces per-receipt overhead by 53--75\% compared to repeating full
+witness \aid{}s.
+
+\subsubsection{Fork Detection}\label{sec:fork-detection}
+
+\begin{definition}[First-Seen-First-Signed]\label{def:fsfs}
+When a witness~$w_j$ receives an event at sequence~$s$ for an agent, it
+records and signs the \emph{first} valid event it observes at that
+sequence.  Any subsequent conflicting event at the same sequence is
+rejected.
+\end{definition}
+
+If an agent (or attacker) submits conflicting events at the same sequence
+number to different witnesses, the resulting receipt sets are
+inconsistent---witnesses that saw event~$e_a$ did not sign event~$e_b$
+and vice versa.  Collecting $\wt$ consistent receipts becomes
+impossible when more than $|\wset| - \wt$ witnesses have seen the
+alternative fork.
+
+\paragraph{Duplicity notice.}
+A witness that receives a conflicting event at a previously receipted
+sequence number \textbf{may} publish a duplicity notice:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \texttt{duplicity}$,
+  \item $\fld{aid}$: the agent's \aid,
+  \item $\fld{s}$: the conflicting sequence number,
+  \item $\fld{event\_a}$, $\fld{event\_b}$: digests of the two conflicting events,
+  \item $\fld{witness\_aid}$, $\fld{witness\_sig}$: the witness's signature
+        over the notice.
+\end{itemize}
+A verified duplicity notice flags the identity as compromised.
+Recovery requires agreement from more than $2/3$ of the declared witnesses
+on the canonical fork; failing that, the identity is permanently flagged.
+
+\subsubsection{Witness Rotation and Bootstrapping}
+
+\paragraph{Rotation rules.}
+When a rotation event changes $\wset$:
+\begin{enumerate}[nosep]
+  \item The rotation event \textbf{must} include receipts from $\wt$ of
+        the \emph{outgoing} (previous) witness set.
+  \item The new witnesses begin their receipting obligation at the
+        rotation event that adds them.
+\end{enumerate}
+This prevents an attacker from silently replacing all witnesses with
+colluding nodes.
+
+\paragraph{Bootstrapping.}
+When a new witness~$w'$ is added via rotation:
+\begin{enumerate}[nosep]
+  \item $w'$ validates the full \kel{} from inception up to the rotation
+        that adds it.
+  \item $w'$'s receipting obligation begins at that rotation event.
+  \item The rotation event itself is receipted by the \emph{previous}
+        witness set (per rule~1 above).
+  \item Only after $w'$ has validated the full history does it begin
+        signing receipts for subsequent events.
+\end{enumerate}
+This avoids circular dependency: new witnesses do not receipt the event
+that adds them.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Trust Attestation Log}\label{sec:tal}
+
+The Trust Attestation Log (\tal) is a hash-chained, signed log of
+attestation entries, kept \emph{separate} from the \kel.
+This separation keeps the \kel{} lean (key lifecycle only) and allows
+independent pruning of expired or superseded attestations without
+affecting key state.
+Each \tal{} entry references the \kel{} event (by sequence number
+$\fld{kel\_s}$ and digest $\fld{kel\_d}$) under which it was created,
+binding the attestation to a specific key state.
+
+\subsubsection{Attestation Types}
+
+\paragraph{Operator attestation.}
+An operator attestation declares the entity that operates the agent.
+The entry carries:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \texttt{operator\_attestation}$,
+  \item $\fld{tal\_s}$: \tal{} sequence number,
+  \item $\fld{kel\_s}$, $\fld{kel\_d}$: binding to the \kel{} state,
+  \item $\fld{claim}$: structured claim containing
+        \texttt{operator\_name}, \texttt{operator\_key} ($\pk_{\text{op}}$, 32~bytes),
+        \texttt{model\_provider}, \texttt{model\_name}, \texttt{runtime},
+  \item $\fld{claim\_sig} = \sig{\sk_{\text{op}}}{\fld{claim}}$: operator signature (independent of agent key),
+  \item $\fld{d}$: BLAKE3 digest of the entry,
+  \item signed by the agent's current key via $\fld{sig}$.
+\end{itemize}
+Two independent signatures are verifiable: the agent signed the \tal{}
+entry and the operator signed the claim.
+
+\paragraph{Behavioral attestation.}
+Behavioral attestations report observed agent behaviour using
+privacy-preserving tiers (\defref{def:privacy-tiers}).
+Each entry carries:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \texttt{behavioral}$,
+  \item $\fld{observer\_aid}$: the observing agent's \aid,
+  \item $\fld{period}$: observation window (ISO~8601 interval),
+  \item $\fld{tier}$: privacy tier (1 or 2),
+  \item $\fld{metrics}$: tier-appropriate metric map (see below).
+\end{itemize}
+
+\paragraph{Vouch.}
+A vouch expresses one agent's confidence in another:
+\begin{itemize}[nosep]
+  \item $\fld{t} = \texttt{vouch}$,
+  \item $\fld{voucher\_aid}$: the vouching agent's \aid,
+  \item $\fld{confidence} \in [0, 1]$,
+  \item $\fld{reason}$: human-readable justification,
+  \item $\fld{expires}$: optional expiry timestamp.
+\end{itemize}
+Vouches are signed by the vouching agent.
+Expired vouches are eligible for pruning.
+
+\subsubsection{Privacy Tiers}
+
+\begin{definition}[Privacy Tiers]\label{def:privacy-tiers}
+Behavioral metrics are partitioned into three tiers:
+\begin{description}[nosep]
+  \item[Tier~1 --- Public.] Boolean flags only (e.g.,
+        \texttt{response\_timing\_consistent\_with\_llm},
+        \texttt{mcp\_tool\_usage\_observed},
+        \texttt{continuous\_availability}).
+  \item[Tier~2 --- Opt-in.] Bucketed ranges, never exact values (e.g.,
+        \texttt{avg\_response\_ms\_bucket}: \texttt{"1000--5000"},
+        \texttt{interaction\_count\_bucket}: \texttt{"1000--5000"}).
+        Agents consent to their observer's tier level.
+  \item[Tier~3 --- Never published.] Raw metrics (exact response times,
+        interaction counts, tool call logs).  Collected by nodes for
+        internal scoring but \textbf{must not} appear in \tal{} entries.
+\end{description}
+\end{definition}
+
+\subsubsection{TAL Chaining and Pruning}
+
+Each \tal{} entry includes the digest of the previous \tal{} entry,
+forming a hash chain signed by the agent's current key (as determined
+by the referenced \kel{} event).
+Nodes \textbf{should} prune:
+\begin{itemize}[nosep]
+  \item expired vouches (past $\fld{expires}$),
+  \item superseded behavioral attestations (newer attestation for the
+        same observer and period).
+\end{itemize}
+Pruning is independent of \kel{} compaction, and different nodes may
+apply different pruning policies.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Message Routing and Encryption}\label{sec:messaging}
+
+Autonym provides store-and-forward messaging as a first-class protocol
+feature.
+Messages are CBOR-encoded, signed by the sender, and routed via home
+nodes.
+
+\subsubsection{Message Format}
+
+A message carries the following fields:
+\begin{itemize}[nosep]
+  \item $\fld{id}$: unique message identifier (16~bytes, random),
+  \item $\fld{from}$: sender \aid,
+  \item $\fld{to}$: recipient \aid,
+  \item $\fld{ts}$: timestamp,
+  \item $\fld{expires}$: optional expiry,
+  \item $\fld{type}$: MIME type (e.g., \texttt{text/plain}),
+  \item $\fld{body}$: content (plaintext or ciphertext),
+  \item $\fld{encrypted}$: boolean flag,
+  \item $\fld{thread}$: optional thread identifier,
+  \item $\fld{sig}$: Ed25519 signature over the canonical CBOR encoding of all
+        fields except $\fld{sig}$.
+\end{itemize}
+The message body \textbf{must not} exceed 256\,KiB; nodes \textbf{may}
+impose a lower limit.
+
+\subsubsection{Local Delivery}
+
+When sender~$A$ and recipient~$B$ share a home node~$N$:
+\begin{enumerate}[nosep]
+  \item $A$ submits a signed message via \texttt{POST /messages} to $N$.
+  \item $N$ verifies $A$'s signature against $A$'s \kel.
+  \item $N$ stores the message in $B$'s inbox.
+  \item $B$ retrieves the message (poll or push) and verifies $A$'s
+        signature against $A$'s \kel{} (available locally).
+\end{enumerate}
+
+\subsubsection{Federated Delivery}
+
+When $A$ resides on node~$N_X$ and $B$ on node~$N_Y$:
+\begin{enumerate}[nosep]
+  \item $A$ submits the message to $N_X$, addressed to $B$'s \aid.
+  \item $N_X$ discovers $N_Y$ via: (a)~a routing hint
+        (\texttt{aid:...@node-y.example.com}), (b)~a cached copy of $B$'s
+        \kel{} (the $\fld{svc}$ field lists home nodes), or (c)~a query
+        to known peers.
+  \item $N_X$ fetches $B$'s \kel{} from $N_Y$ if not cached.
+  \item $N_X$ verifies $A$'s signature, then forwards the message via
+        \texttt{POST /federate/message} to $N_Y$.
+  \item $N_Y$ verifies $A$'s signature against $A$'s \kel{} (fetched
+        from $N_X$ or cached).
+  \item $N_Y$ stores the message in $B$'s inbox.
+  \item $B$ retrieves the message via poll or push.
+\end{enumerate}
+
+\subsubsection{End-to-End Encryption}\label{sec:e2e-encryption}
+
+E2E encryption provides per-message forward secrecy via ephemeral key
+exchange.
+
+\begin{algorithm}[t]
+\caption{End-to-End Encryption}\label{alg:e2e}
+\begin{algorithmic}[1]
+\Require Plaintext $m$, sender \aid{} $a_s$, recipient \aid{} $a_r$, recipient public key $\pk_r$
+\Ensure  Encrypted envelope
+\State $(\esk, \epk) \gets \textsc{X25519-KeyGen}()$ \Comment{Fresh ephemeral keypair}
+\State $\mathit{ss} \gets \xdh{\esk}{\pk_r}$ \Comment{Shared secret via Diffie--Hellman}
+\State $\mathit{salt} \gets a_s \;\|\; a_r$ \Comment{Sender and recipient AIDs}
+\State $K \gets \kdf{\mathit{ss},\; \mathit{salt},\; \texttt{"autonym-e2e-v1"}}$ \Comment{32-byte symmetric key}
+\State $\mathit{nonce} \gets \textsc{Random}(24)$ \Comment{XChaCha20 nonce}
+\State $\mathit{ad} \gets \cbor{\{\fld{from}: a_s,\; \fld{to}: a_r,\; \fld{ts}: t,\; \fld{ephemeral\_pk}: \epk\}}$
+\State $c \gets \enc{K}{m}{\mathit{ad}}$ \Comment{XChaCha20-Poly1305 AEAD}
+\State \textbf{delete} $\esk$ \Comment{Forward secrecy: ephemeral secret key destroyed}
+\State \Return $(\epk,\; \mathit{nonce},\; c,\; \mathit{ad})$
+\end{algorithmic}
+\end{algorithm}
+
+The recipient derives the same shared secret via
+$\xdh{\sk_r}{\epk}$~\cite{rfc7748}, re-derives $K$, and decrypts.
+The ephemeral keypair is X25519; the recipient's X25519 public key
+is derived from their Ed25519 key via RFC~8032~\cite{rfc8032} birational
+mapping.
+
+\paragraph{AEAD binding.}
+The associated data~$\mathit{ad}$ (\algref{alg:e2e}, line~6) binds the
+ciphertext to the conversation metadata---sender, recipient, timestamp,
+and ephemeral public key.
+This prevents \emph{ciphertext transplant attacks}: an adversary cannot
+move an encrypted message from one conversation to another, because
+decryption under a different $\mathit{ad}$ will fail the Poly1305
+authentication check~\cite{rfc8439}.
+
+\paragraph{Encrypted envelope.}
+The encrypted message replaces the plaintext $\fld{body}$ with ciphertext
+and adds $\fld{ephemeral\_pk}$ (32~bytes) and $\fld{nonce}$ (24~bytes)
+in the clear.
+The $\fld{encrypted}$ flag is set to \texttt{true}.
+Nodes store ciphertext they cannot read; only the recipient holding
+$\sk_r$ can decrypt.
+The outer $\fld{sig}$ covers the entire envelope including the
+ciphertext.
+
+\paragraph{Delivery guarantees.}
+Autonym provides \emph{at-least-once} delivery semantics:
+the sending node returns a delivery receipt or error;
+the recipient acknowledges via \texttt{POST /messages/\{id\}/ack};
+if no acknowledgement arrives before $\fld{expires}$, the sender may
+retry.
+Recipients handle duplicates idempotently using the $\fld{id}$ field.
+
+%% ──────────────────────────────────────────────────────────────────────
+\subsection{Node Architecture and Federation}\label{sec:nodes}
+
+\begin{definition}[Home Node Obligations]\label{def:home-node-obligations}
+A \emph{home node} for agent~$A$ is any node listed in $A$'s
+$\fld{svc}$ field.
+A home node \textbf{must}:
+\begin{enumerate}[nosep]
+  \item store $A$'s full \kel{} and \tal,
+  \item accept messages addressed to $A$,
+  \item respond to \kel/\tal{} queries for $A$,
+  \item replicate $A$'s \kel{} to requesting nodes,
+  \item support push delivery (WebSocket or webhook) if $A$ requests it.
+\end{enumerate}
+An agent may declare multiple home nodes for redundancy.
+Home nodes are updated via rotation events (the $\fld{svc}$ field is
+mutable).
+\end{definition}
+
+Nodes are also agents: each node possesses its own \aid{} and keypair,
+and node-to-node federation requests are signed with the node's key.
+
+\subsubsection{Authentication}\label{sec:auth}
+
+Agent-to-node requests are authenticated by signing the request with the
+agent's current key.
+The signature input is a newline-delimited concatenation:
+
+\[
+  \sig{\sk}{\texttt{METHOD} \| \texttt{PATH} \| \texttt{TIMESTAMP} \| \texttt{NONCE} \| \hash{\texttt{BODY}}}
+\]
+
+\noindent
+conveyed via HTTP headers
+\texttt{X-Autonym-Aid}, \texttt{X-Autonym-Timestamp},
+\texttt{X-Autonym-Nonce}, and \texttt{X-Autonym-Signature}.
+The node verifies the signature against the agent's \kel.
+
+\paragraph{Replay protection.}
+\begin{itemize}[nosep]
+  \item The timestamp \textbf{must} be within $\pm 60$\,s of the node's
+        clock.
+  \item The nonce (random 16~bytes, base58-encoded) \textbf{must} be
+        unique per request.
+  \item Nodes track nonces within a 120\,s rolling window and reject
+        duplicates.
+\end{itemize}
+
+\subsubsection{API Surface}
+
+\tabref{tab:api} summarises the node API.  All endpoints use CBOR as the
+default content type; nodes \textbf{may} accept
+\texttt{Accept: application/json} for debugging~\cite{rfc8949}.
+
+\begin{table}[t]
+\centering
+\caption{Node API surface (summary).}\label{tab:api}
+\small
+\begin{tabular}{@{}llp{5.4cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Endpoints} & \textbf{Description} \\
+\midrule
+\kel     & \texttt{GET /kel/\{aid\}[/event/\{seq\}]} & Fetch full \kel, latest event, or event by sequence \\
+\tal     & \texttt{GET /tal/\{aid\}[/latest]} & Fetch full \tal{} or latest entry \\
+Witness  & \texttt{POST /witness/submit}, \texttt{GET /witness/receipt/\{aid\}/\{seq\}} & Submit event for witnessing; retrieve receipt \\
+Message  & \texttt{POST /messages}, \texttt{GET /messages/inbox}, \texttt{POST /messages/\{id\}/ack}, \texttt{WS /messages/stream} & Send, poll, acknowledge, push-stream \\
+Discovery & \texttt{GET /agents/\{alias\}}, \texttt{GET /.well-known/autonym} & Resolve alias; node metadata \\
+Sync     & \texttt{GET /kel/\{aid\}?from\_seq=N}, \texttt{POST /sync/negentropy}, \texttt{POST /federate/message} & Delta sync, Negentropy reconciliation, federated delivery \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Negentropy Sync}\label{sec:sync}
+
+For bulk node-to-node synchronisation of many agents, Autonym uses
+Negentropy-based set reconciliation~\cite{negentropy}, proven in Nostr
+NIP-77~\cite{nip77}:
+\begin{enumerate}[nosep]
+  \item Node $A$ sends a Negentropy initialisation message to
+        \texttt{POST /sync/negentropy} on node~$B$.
+  \item The two nodes exchange Negentropy messages to discover which
+        events each is missing, requiring $O(d \cdot \log(n/d))$
+        bandwidth where $d$ is the number of differences and $n$ the
+        total event count.
+  \item Missing events are transferred as CBOR Sequences~\cite{rfc8742},
+        optionally zstd-compressed~\cite{rfc8478}.
+\end{enumerate}
+This reduces multi-agent sync from $O(\text{agents})$ individual
+round-trips to $O(1)$ negotiation rounds.
+Per-AID delta sync (\texttt{?from\_seq=N}) remains available for
+single-agent resolution.
+
+\subsubsection{Push Delivery}
+
+Beyond polling, nodes support two push mechanisms:
+\begin{description}[nosep]
+  \item[WebSocket.] The agent connects to \texttt{/messages/stream} with
+        an authenticated handshake (same signature scheme as REST).  The
+        node pushes new messages over the persistent connection.
+  \item[Webhook.] Agents register a callback URL in their $\fld{svc}$
+        field.  The node \texttt{POST}s new messages to that URL; the
+        agent's server verifies the node's signature on each delivery.
+\end{description}
+Polling remains the baseline for agents that cannot maintain persistent
+connections.

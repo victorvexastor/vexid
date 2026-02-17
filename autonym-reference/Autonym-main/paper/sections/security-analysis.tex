@@ -1,0 +1,475 @@
+\section{Security Analysis}\label{sec:security-analysis}
+
+We analyse the Autonym protocol against each of the eight security goals
+stated in \secref{sec:security-goals}.
+For every goal we restate the property, identify the protocol mechanism
+that provides it, give an informal but rigorous reduction-style argument,
+and enumerate the conditions under which the property fails.
+
+Throughout this section, $\mathcal{A}$ denotes a probabilistic
+polynomial-time (PPT) adversary operating within the threat model of
+\secref{sec:adversary}.
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Identifier Integrity (\Gid)}\label{sec:analysis-g1}
+
+\begin{theorem}[Identifier Integrity]\label{thm:integrity}
+Let $e_0$ be a valid inception event with $\aid(e_0) = a$.
+For any PPT adversary~$\mathcal{A}$, the probability that $\mathcal{A}$
+produces a distinct inception event $e_0'$ with $e_0'.\fld{k} \neq
+e_0.\fld{k}$ such that $\aid(e_0') = a$ is negligible in the security
+parameter, assuming the collision resistance of BLAKE3.
+\end{theorem}
+
+\paragraph{Mechanism.}
+The \aid{} is computed as
+$a = \textrm{base58}(\hash{\cbordet{e_0 \setminus \{\fld{aid}, \fld{d},
+\fld{sig}\}}})$ (\algref{alg:aid-derivation}, \secref{sec:aid-derivation}).
+The hash input includes the public key~$\fld{k}$, the pre-rotation
+commitment~$\fld{n}$, the witness set~$\fld{w}$, the witness
+threshold~$\fld{wt}$, and the service endpoints~$\fld{svc}$.
+
+\paragraph{Argument.}
+Suppose $\mathcal{A}$ produces $e_0'$ with $e_0'.\fld{k} \neq
+e_0.\fld{k}$ yet $\aid(e_0') = \aid(e_0)$.
+Then $\hash{\cbordet{e_0' \setminus \{\fld{aid}, \fld{d}, \fld{sig}\}}} =
+\hash{\cbordet{e_0 \setminus \{\fld{aid}, \fld{d}, \fld{sig}\}}}$
+while the preimages differ (since $\fld{k}$ differs and CBOR deterministic
+encoding~\cite{rfc8949} is injective).
+This constitutes a collision in BLAKE3~\cite{blake3}, contradicting the
+collision resistance assumption (requiring $\approx 2^{128}$ work for
+256-bit output).
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item If BLAKE3 collision resistance is broken below the 128-bit
+        security level, an attacker could forge an alternative inception
+        event binding a different key to the same \aid.
+  \item The argument does not protect against an attacker who compromises
+        the inception key $\sk$ \emph{before} the inception event is
+        published.  In that case the attacker holds the legitimate key and
+        can create the real inception event.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Pre-rotation Security (\Gpre)}\label{sec:analysis-g2}
+
+\begin{theorem}[Pre-rotation Security]\label{thm:prerotation}
+Let $\kel = \langle e_0, \ldots, e_{s-1} \rangle$ be a valid \kel{} with
+$e_{s-1}.\fld{n} = \nkh$.
+An adversary~$\mathcal{A}$ who compromises the current signing key~$\sk$
+but does not know the pre-rotated next key~$\npk$ cannot produce a valid
+rotation event at sequence~$s$, assuming the preimage resistance of BLAKE3.
+\end{theorem}
+
+\paragraph{Mechanism.}
+The \kel{} verification algorithm (\algref{alg:kel-verify}, line~16)
+enforces an unconditional pre-rotation check: for every rotation event
+$e_s$, the verifier asserts $\hash{e_s.\fld{k}} = e_{s-1}.\fld{n}$.
+This commitment is established at inception and refreshed at every
+rotation (\secref{sec:kel}).
+There is no opt-out of pre-rotation.
+
+\paragraph{Argument.}
+The adversary holds $\sk$ and can therefore sign any event at
+sequence~$s$.  However, to pass the pre-rotation check, $\mathcal{A}$
+must present a key $\pk'$ such that $\hash{\pk'} = \nkh$.
+Since $\nkh = \hash{\npk}$ was committed in $e_{s-1}$ and $\mathcal{A}$
+does not know $\npk$, producing a valid $\pk'$ requires either:
+\begin{enumerate}[nosep]
+  \item finding a preimage of $\nkh$ under BLAKE3, requiring
+        $\approx 2^{256}$ work by preimage resistance~\cite{blake3}; or
+  \item finding a second preimage $\pk' \neq \npk$ with
+        $\hash{\pk'} = \nkh$, also requiring $\approx 2^{256}$ work.
+\end{enumerate}
+Both are negligible for PPT adversaries.
+Knowledge of $\sk$ provides no advantage in solving this preimage problem,
+because the commitment $\nkh$ was fixed in a prior event and is
+independent of $\sk$.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item If the adversary compromises \emph{both} $\sk$ and $\npk$
+        (e.g., from the same key store), pre-rotation offers no protection.
+        This is a key-management assumption, not a protocol weakness.
+  \item Pre-rotation does not prevent the adversary from \emph{using} the
+        compromised $\sk$ to sign messages or impersonate the agent
+        before a legitimate rotation occurs.  It only prevents the adversary
+        from \emph{taking over} the identity permanently.
+  \item If BLAKE3 preimage resistance is broken, the adversary could
+        compute $\npk$ from $\nkh$.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Deactivation Resistance (\Gdeact)}\label{sec:analysis-g3}
+
+\begin{theorem}[Deactivation Resistance]\label{thm:deactivation}
+An adversary~$\mathcal{A}$ who compromises the current signing key~$\sk$
+but not the pre-rotated next key~$\nsk$ cannot produce a valid deactivation
+event, assuming the EUF-CMA security of Ed25519.
+\end{theorem}
+
+\paragraph{Mechanism.}
+Deactivation events require dual signatures (\secref{sec:kel}):
+$\fld{sig} = \sig{\sk}{\fld{d}}$ from the current key and
+$\fld{ns} = \sig{\nsk}{\fld{d}}$ from the pre-committed next key.
+The verifier (\algref{alg:kel-verify}, lines~21--22) checks
+$\hash{\npk} = \nkh$ and $\verify{\npk}{\fld{d}}{\fld{ns}}$.
+
+\paragraph{Argument.}
+The adversary can produce $\fld{sig}$ (having $\sk$) but must also
+produce $\fld{ns}$: a valid Ed25519 signature under $\npk$ (whose
+secret key $\nsk$ is unknown).
+Forging such a signature without $\nsk$ would break the EUF-CMA
+security of Ed25519~\cite{euf-cma,ed25519-security}.
+Additionally, $\mathcal{A}$ cannot substitute a different key for
+$\npk$ because the verifier checks $\hash{\npk} = \nkh$
+(the same pre-rotation commitment that protects rotation), and finding a
+preimage is infeasible by the argument in \thmref{thm:prerotation}.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item If the adversary compromises both $\sk$ and $\nsk$, deactivation
+        can be performed.  This is by design: the legitimate agent who
+        holds both keys should be able to deactivate.
+  \item The dual-signature requirement means the legitimate agent must
+        retain access to $\nsk$ for deactivation, adding an operational
+        requirement for secure key storage.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Equivocation Detection (\Gequiv)}\label{sec:analysis-g4}
+
+\begin{theorem}[Equivocation Detection]\label{thm:equivocation}
+Let an agent declare witness set~$\wset$ with threshold~$\wt$.
+If at least $\wt$ witnesses are honest (i.e., the adversary compromises
+at most $f < \wt$ witnesses), then any attempt to publish conflicting
+events $e_s$ and $e_s'$ at the same sequence number~$s$ is detectable.
+\end{theorem}
+
+\paragraph{Mechanism.}
+Witnesses follow the first-seen-first-signed rule
+(\defref{def:fsfs}, \secref{sec:fork-detection}):
+each honest witness signs only the first valid event it observes at a
+given sequence number and rejects all subsequent conflicting events.
+An event is considered established only when it carries at least $\wt$
+witness receipts (\algref{alg:witness}).
+
+\paragraph{Argument.}
+Suppose the adversary creates two conflicting events $e_s$ and $e_s'$
+at sequence $s$ and submits them to different subsets of witnesses.
+Each honest witness signs exactly one of $e_s$ or $e_s'$ (whichever it
+sees first).
+Let $h = |\wset| - f \ge |\wset| - \wt + 1$ be the number of honest
+witnesses.
+Let $h_a$ honest witnesses see $e_s$ first and $h_b = h - h_a$
+see $e_s'$ first.
+
+Fork~$e_s$ can collect at most $h_a + f$ receipts and fork~$e_s'$ at
+most $h_b + f$ receipts.
+For both forks to reach the threshold~$\wt$, we need
+$h_a + f \ge \wt$ \emph{and} $h_b + f \ge \wt$, which requires
+$h_a + h_b + 2f \ge 2\wt$.
+Since $h_a + h_b = h = |\wset| - f$, this simplifies to
+$|\wset| + f \ge 2\wt$, i.e., $f \ge 2\wt - |\wset|$.
+With the recommended threshold $\wt \ge \lceil |\wset|/2 \rceil + 1$,
+this requires $f \ge 2$ for $|\wset| = 3$ (where $\wt = 2$), but only
+one fork can accumulate $\wt = 2$ receipts from the $h = 2$ honest
+witnesses plus $f \le 0$ compromised.
+In all cases with $f < \wt$, at most one fork can accumulate $\wt$
+receipts.
+
+The other fork is detectable: a verifier who encounters both events
+(even if one has insufficient receipts) can identify the equivocation.
+Honest witnesses that observe a conflicting event may also issue a
+duplicity notice (\secref{sec:fork-detection}).
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item If $f \ge \wt$ (the adversary compromises a majority of
+        witnesses), both forks can be receipted and the equivocation is
+        undetectable until honest witnesses are consulted out-of-band.
+  \item Detection requires a verifier to observe both forks.  If the
+        adversary perfectly partitions the network (showing fork~$A$ to
+        one set of observers and fork~$B$ to another), detection depends
+        on eventual cross-communication between the two observer sets.
+  \item The first-seen-first-signed rule introduces a race condition:
+        the canonical fork is whichever the honest witnesses see first,
+        not necessarily the one intended by the legitimate agent.  Recovery
+        requires $>2/3$ witness agreement on the canonical fork.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Message Confidentiality (\Gconf)}\label{sec:analysis-g5}
+
+\begin{theorem}[Message Confidentiality]\label{thm:confidentiality}
+Let $c = \enc{K}{N}{m}$ be an E2E encrypted message from agent~$A$ to
+agent~$B$, where $K = \kdf{\xdh{\esk}{\pk_B}}$
+(\algref{alg:e2e}, \secref{sec:e2e-encryption}).
+No PPT adversary---including intermediate nodes---can recover $m$ from
+the encrypted envelope without access to $B$'s X25519 private key~$\sk_B$,
+assuming the IND-CPA security of XChaCha20-Poly1305 and the
+Computational Diffie--Hellman (CDH) assumption on Curve25519.
+\end{theorem}
+
+\paragraph{Mechanism.}
+Each message is encrypted under a fresh ephemeral X25519 keypair
+$(\esk, \epk)$.
+The shared secret $\mathit{ss} = \xdh{\esk}{\pk_B}$ is derived via
+Diffie--Hellman~\cite{rfc7748}, then expanded via
+HKDF-BLAKE3~\cite{rfc5869,blake3} into a 32-byte symmetric key~$K$.
+Encryption uses XChaCha20-Poly1305~\cite{rfc8439,xchacha} with a random
+24-byte nonce (\algref{alg:e2e}).
+The encrypted envelope carries $\epk$ and the nonce in the clear; the
+ciphertext and AEAD tag are opaque to nodes.
+
+\paragraph{Argument.}
+An adversary observing the envelope knows $\epk$ but not $\esk$.
+Recovering $\mathit{ss} = \xdh{\esk}{\pk_B}$ from $(\epk, \pk_B)$
+requires solving the CDH problem on Curve25519~\cite{rfc7748},
+which is assumed hard.
+Without $\mathit{ss}$, the adversary cannot derive $K$: HKDF is a
+pseudorandom function under the assumption that the underlying hash is a
+PRF~\cite{rfc5869}.
+Without $K$, distinguishing $c$ from random requires breaking the
+IND-CPA security of XChaCha20-Poly1305~\cite{rfc8439,xchacha}.
+Composing these reductions: distinguishing the ciphertext from random
+requires breaking CDH, HKDF pseudorandomness, or XChaCha20 IND-CPA,
+each of which is assumed infeasible for PPT adversaries.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item Compromising the recipient's long-term key $\sk_B$ allows the
+        adversary to derive the X25519 private key (via the birational
+        map from Ed25519~\cite{rfc8032}) and decrypt all messages
+        encrypted to $\pk_B$.
+  \item Message metadata---sender \aid, recipient \aid, timestamp, message
+        size, and the $\fld{encrypted}$ flag---is visible to nodes in the
+        clear.  Autonym does not provide metadata confidentiality.
+  \item If the sender fails to use a cryptographically random nonce,
+        nonce reuse under the same key would break XChaCha20-Poly1305
+        confidentiality.  The 24-byte nonce space makes random collision
+        negligible ($< 2^{-64}$ after $2^{32}$ messages per key).
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Forward Secrecy (\Gfs)}\label{sec:analysis-g6}
+
+\begin{theorem}[Forward Secrecy]\label{thm:forward-secrecy}
+Suppose agent~$A$ encrypts a message to agent~$B$ at time~$t_0$ using
+ephemeral keypair $(\esk, \epk)$, and deletes $\esk$ immediately after
+encryption.
+If the adversary compromises $A$'s long-term key~$\sk_A$ at any time
+$t_1 > t_0$, the adversary cannot recover the message plaintext, assuming
+$\esk$ has been securely deleted and the CDH assumption on Curve25519 holds.
+\end{theorem}
+
+\paragraph{Mechanism.}
+The E2E encryption protocol (\algref{alg:e2e}, line~8) mandates
+immediate deletion of $\esk$ after computing the ciphertext.
+The shared secret $\mathit{ss} = \xdh{\esk}{\pk_B}$ exists only
+transiently in memory during encryption.
+Each message uses an independent ephemeral keypair, so compromise of one
+message's key material does not affect any other message.
+
+\paragraph{Argument.}
+After deletion of $\esk$, the only keys the adversary can obtain are
+$\sk_A$ (the sender's long-term signing key) and potentially $\epk$
+(visible in the envelope).
+The sender's signing key $\sk_A$ is an Ed25519 key, which is
+\emph{not} the same as the ephemeral X25519 key $\esk$.
+Even if the adversary derives $A$'s static X25519 key from $\sk_A$,
+this yields a \emph{different} key from the ephemeral $\esk$.
+The shared secret was computed using $\esk$, which no longer exists.
+Recovering $\mathit{ss}$ from $(\epk, \pk_B)$ without $\esk$ requires
+solving CDH on Curve25519~\cite{rfc7748}, which is assumed hard.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item Forward secrecy is an \emph{operational} property that depends on
+        reliable deletion of $\esk$.  If the runtime environment retains
+        $\esk$ (e.g., in swap, core dumps, or memory snapshots), forward
+        secrecy is lost.
+  \item Compromise of the \emph{recipient's} long-term key $\sk_B$ at
+        any time (before or after the message) allows decryption, because
+        the recipient's X25519 private key (derived from $\sk_B$) is
+        static.  Autonym provides \emph{sender-side} forward secrecy only;
+        full bidirectional forward secrecy would require a ratcheting
+        protocol (e.g., the Signal Double Ratchet~\cite{signal-protocol}).
+        This is a deliberate design choice for asynchronous, stateless
+        agent-to-agent communication.
+  \item Messages stored in the recipient's inbox remain decryptable by
+        anyone who later compromises $\sk_B$, since the recipient must
+        retain their key to decrypt.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Replay Protection (\Greplay)}\label{sec:analysis-g7}
+
+\begin{theorem}[Replay Protection]\label{thm:replay}
+Under the loose clock synchronization assumption ($\pm 60$\,s), any
+replayed or stale agent-to-node request is rejected with overwhelming
+probability, assuming nonces are generated uniformly at random from a
+128-bit space.
+\end{theorem}
+
+\paragraph{Mechanism.}
+Request authentication (\secref{sec:auth}) requires:
+\begin{enumerate}[nosep]
+  \item A timestamp within $\pm 60$\,s of the node's clock.
+  \item A random 16-byte (128-bit) nonce, unique per request.
+  \item An Ed25519 signature over the concatenation
+        $\texttt{METHOD} \| \texttt{PATH} \| \texttt{TIMESTAMP} \|
+        \texttt{NONCE} \| \hash{\texttt{BODY}}$.
+\end{enumerate}
+Nodes track observed nonces within a 120\,s rolling window and reject
+any request with a duplicate nonce or an expired timestamp.
+
+\paragraph{Argument.}
+Consider two replay scenarios:
+\begin{enumerate}
+  \item \textbf{Immediate replay} (within the 120\,s window): The
+        adversary resubmits a captured request with the same timestamp
+        and nonce.  The node's nonce cache contains the original nonce, so
+        the duplicate is rejected.
+  \item \textbf{Delayed replay} (after the 120\,s window): The timestamp
+        in the replayed request is now more than 60\,s stale.  The node
+        rejects the request based on the timestamp check, even though the
+        nonce has expired from the cache.
+\end{enumerate}
+The 120\,s nonce window and the $\pm 60$\,s timestamp window overlap
+such that there is no gap: any request valid under the timestamp check
+is guaranteed to fall within the nonce tracking window.
+
+The probability that an adversary generates a fresh nonce that collides
+with a legitimate nonce in the rolling window is at most
+$q / 2^{128}$ where $q$ is the number of legitimate requests in the
+window---negligible for any practical $q$.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item If the clock skew between agent and node exceeds 60\,s, legitimate
+        requests are rejected (a liveness issue, not a security issue).
+  \item The scheme protects agent-to-node requests only.  Replay protection
+        for \kel{} events is provided by hash-chain sequencing
+        (\algref{alg:kel-verify}), which is independent of timestamps.
+  \item If a node's nonce cache is lost (e.g., due to a crash without
+        persisting the nonce window), nonces from the current window
+        could be replayed during the remainder of the window.  Nodes
+        \textbf{should} persist nonce state or use a crash-recovery-safe
+        data structure.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{AEAD Binding (\Gaead)}\label{sec:analysis-g8}
+
+\begin{theorem}[AEAD Binding]\label{thm:aead}
+An adversary cannot transplant an E2E encrypted ciphertext from one
+conversational context to another without detection, assuming the
+INT-CTXT (ciphertext integrity) property of XChaCha20-Poly1305.
+\end{theorem}
+
+\paragraph{Mechanism.}
+The AEAD associated data in the E2E encryption scheme
+(\algref{alg:e2e}, line~6) is:
+\[
+  \mathit{AD} = \cbor{\{\fld{from}: \aid_S,\; \fld{to}: \aid_R,\;
+  \fld{ts}: t,\; \fld{ephemeral\_pk}: \epk\}}.
+\]
+The Poly1305 authentication tag is computed over both the ciphertext and
+this associated data~\cite{rfc8439}.
+
+\paragraph{Argument.}
+Consider an adversary who intercepts a valid encrypted envelope
+$(\epk, N, c, \mathit{AD})$ from agent~$A$ to agent~$B$ and attempts to
+present it in a different context (e.g., from $A$ to $C$, or from $A'$
+to $B$).
+The adversary must modify at least one field in $\mathit{AD}$ (changing
+$\fld{to}$, $\fld{from}$, or $\fld{ts}$).
+The recipient (or any target context) will recompute
+$\mathit{AD}' \neq \mathit{AD}$ from the envelope metadata and attempt
+to verify the Poly1305 tag against $(\mathit{AD}', c)$.
+Since the tag was computed over $\mathit{AD} \neq \mathit{AD}'$,
+verification fails with overwhelming probability by the INT-CTXT property
+of XChaCha20-Poly1305~\cite{xchacha}.
+
+The binding to $\epk$ additionally prevents key-substitution attacks:
+even if the adversary generates a different ephemeral key that produces
+the same shared secret with a different recipient, the $\epk$ in the
+associated data will not match, causing tag verification failure.
+
+\paragraph{Limitations.}
+\begin{itemize}[nosep]
+  \item AEAD binding does not prevent an adversary from \emph{replaying}
+        the same ciphertext to the \emph{same} recipient in the
+        \emph{same} context (identical $\mathit{AD}$).  Protection against
+        this form of replay relies on message $\fld{id}$ deduplication
+        and $\fld{expires}$ checks at the application layer.
+  \item If the adversary could manipulate the recipient into using a
+        modified $\mathit{AD}$ that matches the transplanted ciphertext,
+        the binding would be circumvented.  However, this also requires
+        forging the outer $\fld{sig}$ on the modified envelope, which is
+        infeasible under Ed25519 EUF-CMA~\cite{euf-cma}.
+\end{itemize}
+
+% ════════════════════════════════════════════════════════════════
+\subsection{Summary}\label{sec:analysis-summary}
+
+\tabref{tab:security-summary} summarises the security goals, the
+protocol mechanisms that address them, the critical assumptions, and the
+failure conditions.
+
+\begin{table}[t]
+\centering
+\caption{Security goal summary.}\label{tab:security-summary}
+\small
+\begin{tabular}{@{}lp{2.2cm}p{2.8cm}p{2.6cm}p{3.2cm}@{}}
+\toprule
+\textbf{Goal} & \textbf{Property} & \textbf{Mechanism} & \textbf{Primary Assumption} & \textbf{Failure Condition} \\
+\midrule
+\Gid    & Identifier integrity
+        & \aid{} = $\hash{\cbordet{e_\inception}}$
+        & BLAKE3 collision resistance
+        & BLAKE3 collision found \\[4pt]
+\Gpre   & Pre-rotation security
+        & $\hash{\pk'} = \fld{n}_{\text{prev}}$
+        & BLAKE3 preimage resistance
+        & Both $\sk$ and $\nsk$ compromised \\[4pt]
+\Gdeact & Deactivation resistance
+        & Dual signatures ($\fld{sig}$ + $\fld{ns}$)
+        & Ed25519 EUF-CMA
+        & Both $\sk$ and $\nsk$ compromised \\[4pt]
+\Gequiv & Equivocation detection
+        & First-seen-first-signed witnesses
+        & $< \wt$ witnesses compromised
+        & $\ge \wt$ witnesses compromised \\[4pt]
+\Gconf  & Message confidentiality
+        & Ephemeral X25519 + XChaCha20
+        & CDH on Curve25519; IND-CPA
+        & Recipient's long-term key compromised \\[4pt]
+\Gfs    & Forward secrecy
+        & Ephemeral key deletion
+        & CDH + secure deletion
+        & Ephemeral key not deleted \\[4pt]
+\Greplay & Replay protection
+        & Timestamp + nonce window
+        & Loose clock sync ($\pm 60$\,s)
+        & Nonce state lost on restart \\[4pt]
+\Gaead  & AEAD binding
+        & AD = $\cbor{\fld{from}, \fld{to}, \fld{ts}, \epk}$
+        & XChaCha20 INT-CTXT
+        & None (unconditional given correct AD) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{remark}[Compositional Security]\label{rem:composition}
+The analysis above treats each goal in isolation.
+In practice, properties compose: pre-rotation security (\Gpre) and
+deactivation resistance (\Gdeact) together ensure that an adversary with
+a compromised current key can neither steal nor destroy the identity;
+message confidentiality (\Gconf) and AEAD binding (\Gaead) together
+ensure that encrypted messages are both unreadable and non-transplantable.
+A full compositional security proof (e.g., via the Universal Composability
+framework) is left to future work.
+\end{remark}

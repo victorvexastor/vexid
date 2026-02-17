@@ -1,0 +1,118 @@
+\section{Reference Implementation}\label{sec:implementation}
+
+This section describes the reference implementation architecture for Autonym.
+The design targets a minimal, auditable codebase partitioned into four
+binaries with clearly separated responsibilities.
+
+%% ── Reference Architecture ─────────────────────────────────────────
+\subsection{Reference Architecture}\label{sec:impl-arch}
+
+The implementation is split into four components:
+
+\paragraph{\texttt{autonym-core} (library).}
+The shared cryptographic and data-structure foundation.
+Provides \kel{}/\tal{} data structures, CBOR deterministic
+serialization~\cite{rfc8949}, verification algorithms (including the
+full \kel{} verification procedure of \algref{alg:kel-verify}), \aid{}
+derivation (two-pass, per \algref{alg:aid-derivation}),
+Ed25519 signing and verification~\cite{rfc8032},
+X25519 key agreement~\cite{rfc7748},
+$\hash{\cdot}$ hashing~\cite{blake3},
+$\kdf{\cdot}$ key derivation~\cite{rfc5869},
+XChaCha20-Poly1305 AEAD encryption~\cite{xchacha,rfc8439},
+zstd compression with a protocol-versioned trained dictionary~\cite{rfc8478},
+and the message format with validation logic.
+All protocol objects are constructed and verified through this library;
+no other component implements cryptographic primitives directly.
+
+\paragraph{\texttt{autonym-node} (server binary).}
+The full-featured node daemon.
+Exposes the REST API described in \secref{sec:protocol}
+(KEL/TAL storage, messaging, witness, and discovery endpoints),
+stores data in SQLite (see \secref{sec:impl-storage}),
+provides WebSocket push delivery for real-time message receipt,
+implements Negentropy-based set reconciliation~\cite{negentropy,nip77}
+for efficient bulk node-to-node synchronization,
+handles node-to-node federation (cross-node message routing and KEL replication),
+maintains the alias registry (human-readable name $\to$ \aid{} mapping),
+and computes the agency confidence score from available \tal{} entries.
+
+\paragraph{\texttt{autonym-witness} (lightweight binary).}
+A minimal witness daemon with a deliberately narrow scope:
+append-only \kel{} storage, event verification against the stored log,
+receipt signing, and receipt/KEL serving.
+It does \emph{not} store messages, route traffic, or run any
+federation logic.
+Uses redb as its storage backend
+(see \secref{sec:impl-storage}).
+The small footprint means a witness can run on constrained hardware---a
+Raspberry~Pi can witness thousands of agents.
+
+\paragraph{\texttt{autonym-cli} (tooling).}
+A command-line interface for agent operators.
+Supports key generation with mandatory pre-rotation commitment,
+\kel{} management (inception, rotation, deactivation),
+\tal{} management (operator attestation publishing, vouch creation),
+message send/receive with end-to-end encryption,
+and witness selection with receipt collection.
+
+%% ── Language Choices ────────────────────────────────────────────────
+\subsection{Language Choices}\label{sec:impl-lang}
+
+\texttt{autonym-core} and \texttt{autonym-node} are implemented in Rust.
+The choice is motivated by three factors:
+(i)~cryptographic correctness benefits from Rust's type system and
+absence of undefined behavior;
+(ii)~the node daemon must handle concurrent connections and large
+KEL databases without garbage-collection pauses;
+(iii)~Rust's \texttt{wasm32-unknown-unknown} target allows
+\texttt{autonym-core} to compile to WebAssembly, enabling browser
+clients and JavaScript runtimes to perform local \kel{} verification
+and message encryption without a server round-trip.
+
+A TypeScript SDK wraps the WASM build of \texttt{autonym-core},
+providing idiomatic async/await APIs for Node.js and browser
+environments, including MCP tool-server integration.
+
+%% ── Storage Backends ────────────────────────────────────────────────
+\subsection{Storage Backends}\label{sec:impl-storage}
+
+\paragraph{Nodes: SQLite.}
+Nodes use SQLite as their primary storage backend---single-file,
+zero-configuration, widely deployed.
+Events are stored as raw CBOR blobs indexed by $(\text{\aid{}},\,\text{seq})$.
+The schema comprises five tables:
+\texttt{key\_events} (the \kel{}),
+\texttt{tal\_entries} (the \tal{}),
+\texttt{messages} (store-and-forward inbox),
+\texttt{receipts} (aggregate witness receipts), and
+\texttt{aliases} (human-readable name registry).
+zstd compression is applied at the storage layer, yielding
+approximately 86--90\% space savings over uncompressed JSON
+(see \tabref{tab:storage-estimates} in \secref{sec:performance}).
+
+\paragraph{Witnesses: redb.}
+Witnesses use redb, a pure-Rust embedded key--value store.
+The data model is a single table mapping $(\text{\aid{}},\,\text{seq})$
+to the raw event blob.
+redb requires no FFI, is crash-safe by design, and has a minimal
+memory footprint---properties that match the witness's constrained role.
+
+%% ── Component Interaction ───────────────────────────────────────────
+\subsection{Component Interaction}\label{sec:impl-interaction}
+
+The four components interact through well-defined boundaries.
+\texttt{autonym-core} is a pure library with no I/O; it accepts byte
+slices and returns verified structures or typed errors.
+\texttt{autonym-node} and \texttt{autonym-witness} both depend on
+\texttt{autonym-core} for all cryptographic operations---neither
+implements signing, hashing, or CBOR encoding independently.
+\texttt{autonym-cli} links \texttt{autonym-core} directly and
+communicates with nodes and witnesses over the REST API.
+When an agent creates a new key event, the typical flow is:
+\texttt{autonym-cli} constructs and signs the event via
+\texttt{autonym-core}, submits it to each designated witness
+(\texttt{autonym-witness} verifies and receipts), collects the
+threshold number of receipts, and publishes the event with receipts
+to the agent's home node (\texttt{autonym-node}), which stores,
+indexes, and replicates it to federation peers.

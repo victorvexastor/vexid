@@ -1,0 +1,90 @@
+\section{Error Code Registry}\label{app:error-codes}
+
+All Autonym error responses use a consistent CBOR-encoded envelope
+(\secref{sec:protocol}, \S12 of the specification).
+The wire format is a single CBOR map with an \fld{error} key whose value
+contains four fields: \fld{code} (integer), \fld{type} (text string),
+\fld{message} (short human-readable summary), and an optional \fld{detail}
+(text string with diagnostic context).
+Codes are partitioned into five ranges, one per subsystem.
+
+%% ── KEL Errors ──────────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{KEL errors (1000–1099).}\label{tab:err-kel}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Code & Type & Description \\
+\midrule
+1000 & \texttt{invalid\_event}          & Event fails structural validation \\
+1001 & \texttt{sequence\_gap}            & Event sequence number does not follow previous \\
+1002 & \texttt{prerotation\_mismatch}    & New key does not match pre-rotation commitment \\
+1003 & \texttt{chain\_break}             & Event \fld{p} field does not match previous event digest \\
+1004 & \texttt{duplicity\_detected}      & Conflicting events at same sequence number \\
+1005 & \texttt{deactivated}              & Identity has been deactivated; no further events accepted \\
+1006 & \texttt{invalid\_deactivation}    & Deactivation missing dual signature \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ── Witness Errors ──────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Witness errors (1100–1199).}\label{tab:err-witness}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Code & Type & Description \\
+\midrule
+1100 & \texttt{witness\_threshold}  & Insufficient witness receipts \\
+1101 & \texttt{witness\_continuity} & Witness rotation missing outgoing witness receipts \\
+1102 & \texttt{witness\_unknown}    & Event references unknown witness \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ── Authentication Errors ───────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Authentication errors (1200–1299).}\label{tab:err-auth}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Code & Type & Description \\
+\midrule
+1200 & \texttt{auth\_timestamp}    & Timestamp outside $\pm60$\,s window \\
+1201 & \texttt{auth\_nonce\_reuse} & Nonce already seen in rolling window \\
+1202 & \texttt{auth\_signature}    & Signature verification failed \\
+1203 & \texttt{auth\_aid\_unknown} & \aid{} not found on this node \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ── Message Errors ──────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Message errors (1300–1399).}\label{tab:err-msg}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Code & Type & Description \\
+\midrule
+1300 & \texttt{recipient\_not\_found} & Recipient \aid{} not hosted on this node \\
+1301 & \texttt{message\_too\_large}   & Body exceeds 256\,KiB limit \\
+1302 & \texttt{message\_expired}      & Message has passed its expiry time \\
+1303 & \texttt{message\_duplicate}    & Message with this ID already received \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ── Federation Errors ───────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Federation errors (1400–1499).}\label{tab:err-fed}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Code & Type & Description \\
+\midrule
+1400 & \texttt{federation\_unreachable} & Remote node could not be contacted \\
+1401 & \texttt{federation\_rejected}    & Remote node rejected the federated request \\
+1402 & \texttt{federation\_timeout}     & Remote node did not respond in time \\
+\bottomrule
+\end{tabular}
+\end{table}

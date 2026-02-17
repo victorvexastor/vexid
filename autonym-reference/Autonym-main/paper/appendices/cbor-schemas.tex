@@ -1,0 +1,199 @@
+\section{CBOR Diagnostic Notation Schemas}\label{app:cbor-schemas}
+
+This appendix collects every normative data structure in the Autonym protocol,
+rendered in CBOR diagnostic notation (RFC~8949 \S8)~\cite{rfc8949}.
+The authoritative encoding is always CBOR deterministic (RFC~8949 \S4.2);
+the diagnostic notation shown here is for human readability only.
+
+%% ── 1. Inception Event ─────────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Inception event (\fld{s}~=~0).},label={lst:inception}]
+{
+  "v":  1,                              ; protocol version
+  "t":  "inception",                    ; event type
+  "aid": h'...',                        ; AID (32-byte BLAKE3 hash)
+  "s":  0,                              ; sequence number
+  "kt": "ed25519",                      ; key type
+  "k":  h'...',                         ; current public key (32 bytes)
+  "n":  h'...',                         ; BLAKE3 hash of next public key (REQUIRED)
+  "w":  [h'...', h'...'],               ; witness AIDs
+  "wt": 2,                              ; witness threshold
+  "svc": [                              ; service endpoints
+    {"t": "node", "u": "https://node-a.example.com"},
+    {"t": "node", "u": "https://node-b.example.com"}
+  ],
+  "ts": "2026-02-15T00:00:00Z",         ; timestamp (informational)
+  "d":  h'...'                          ; event digest
+}
+\end{lstlisting}
+
+%% ── 2. Rotation Event ──────────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Rotation event (\fld{s}~$>$~0).},label={lst:rotation}]
+{
+  "v":  1,
+  "t":  "rotation",
+  "aid": h'...',
+  "s":  3,
+  "kt": "ed25519",
+  "k":  h'...',                         ; new public key (32 bytes)
+  "n":  h'...',                         ; BLAKE3 hash of next-next public key (REQUIRED)
+  "p":  h'...',                         ; BLAKE3 hash of previous event (chain link)
+  "w":  [h'...', h'...'],               ; updated witness list
+  "wt": 2,
+  "svc": [                              ; updated service endpoints
+    {"t": "node", "u": "https://new-node.example.com"}
+  ],
+  "ts": "2026-02-15T12:00:00Z",
+  "d":  h'...'
+}
+\end{lstlisting}
+
+%% ── 3. Deactivation Event ──────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Deactivation event (terminal).},label={lst:deactivation}]
+{
+  "v":  1,
+  "t":  "deactivation",
+  "aid": h'...',
+  "s":  5,
+  "p":  h'...',                         ; hash of previous event
+  "ns": h'...',                         ; next-key signature (64 bytes)
+  "ts": "2026-02-15T18:00:00Z",
+  "d":  h'...'
+}
+\end{lstlisting}
+
+%% ── 4. Operator Attestation ────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Operator attestation (\tal{} entry).},label={lst:operator-attestation}]
+{
+  "v":  1,
+  "t":  "operator_attestation",
+  "aid": h'...',
+  "tal_s": 0,                           ; TAL sequence number
+  "kel_s": 0,                           ; KEL event this was created under
+  "kel_d": h'...',                       ; digest of that KEL event
+  "claim": {
+    "type": "operator",
+    "operator_name": "Alice's Lab",
+    "operator_key": h'...',              ; Ed25519 public key (32 bytes)
+    "model_provider": "anthropic",
+    "model_name": "claude-sonnet-4-20250514",
+    "runtime": "autonym-agent/0.1.0"
+  },
+  "claim_sig": h'...',                  ; signature by operator_key
+  "ts": "2026-02-15T00:00:00Z",
+  "d":  h'...'                          ; BLAKE3 digest of this entry
+}
+\end{lstlisting}
+
+%% ── 5. Behavioral Attestation — Tier 1 ────────────────────────────
+\begin{lstlisting}[language={},caption={Behavioral attestation---Tier~1 (boolean flags only).},label={lst:behavioral-t1}]
+{
+  "type": "behavioral",
+  "observer_aid": h'...',
+  "period": "2026-01-15/2026-02-15",
+  "tier": 1,
+  "metrics": {
+    "response_timing_consistent_with_llm": true,
+    "mcp_tool_usage_observed": true,
+    "continuous_availability": true
+  }
+}
+\end{lstlisting}
+
+%% ── 6. Behavioral Attestation — Tier 2 ────────────────────────────
+\begin{lstlisting}[language={},caption={Behavioral attestation---Tier~2 (bucketed ranges).},label={lst:behavioral-t2}]
+{
+  "type": "behavioral",
+  "observer_aid": h'...',
+  "period": "2026-01-15/2026-02-15",
+  "tier": 2,
+  "metrics": {
+    "avg_response_ms_bucket": "1000-5000",
+    "interaction_count_bucket": "1000-5000",
+    "mcp_tool_ratio_bucket": "0.8-1.0"
+  }
+}
+\end{lstlisting}
+
+%% ── 7. Vouch ───────────────────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Vouch (signed by the vouching agent).},label={lst:vouch}]
+{
+  "type": "vouch",
+  "voucher_aid": h'...',
+  "confidence": 0.85,                   ; 0.0 to 1.0
+  "reason": "Consistent agent behavior observed over 30 days",
+  "expires": "2026-08-15T00:00:00Z"     ; optional expiry
+}
+\end{lstlisting}
+
+%% ── 8. Message Format ──────────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Plaintext message format.},label={lst:message}]
+{
+  "id":        h'...',                   ; unique message ID (16 bytes)
+  "from":      h'...',                   ; sender AID
+  "to":        h'...',                   ; recipient AID
+  "ts":        "2026-02-15T12:00:00Z",
+  "expires":   "2026-02-22T12:00:00Z",
+  "type":      "text/plain",
+  "body":      h'...',                   ; content (plaintext)
+  "encrypted": false,
+  "thread":    h'...',                   ; optional thread ID
+  "sig":       h'...'                    ; Ed25519 signature over canonical bytes
+}
+\end{lstlisting}
+
+%% ── 9. Encrypted Message Envelope ──────────────────────────────────
+\begin{lstlisting}[language={},caption={Encrypted message envelope (E2E with forward secrecy).},label={lst:encrypted-msg}]
+{
+  "id":        h'...',
+  "from":      h'...',
+  "to":        h'...',
+  "ts":        "2026-02-15T12:00:00Z",
+  "expires":   "2026-02-22T12:00:00Z",
+  "type":      "text/plain",
+  "encrypted": true,
+  "ephemeral_pk": h'...',               ; ephemeral X25519 public key (32 bytes)
+  "nonce":     h'...',                   ; XChaCha20 nonce (24 bytes)
+  "body":      h'...',                   ; ciphertext
+  "thread":    h'...',
+  "sig":       h'...'                    ; signature over the envelope
+}
+\end{lstlisting}
+
+%% ── 10. Aggregate Receipt ──────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Aggregate witness receipt.},label={lst:receipt}]
+{
+  "aid": h'...',                         ; agent AID
+  "s":   3,                              ; event sequence number
+  "d":   h'...',                         ; event digest
+  "wr": [                                ; witness receipts (index, signature)
+    [0, h'...'],
+    [1, h'...'],
+    [2, h'...']
+  ]
+}
+\end{lstlisting}
+
+%% ── 11. Duplicity Notice ───────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Duplicity notice (fork detection).},label={lst:duplicity}]
+{
+  "t": "duplicity",
+  "aid": h'...',
+  "s": 3,
+  "event_a": h'...',                    ; digest of first event seen
+  "event_b": h'...',                    ; digest of conflicting event
+  "witness_aid": h'...',
+  "witness_sig": h'...'                 ; witness signature over this notice
+}
+\end{lstlisting}
+
+%% ── 12. Error Response ─────────────────────────────────────────────
+\begin{lstlisting}[language={},caption={Error response envelope.},label={lst:error}]
+{
+  "error": {
+    "code":    1200,
+    "type":    "auth_error",
+    "message": "Timestamp outside acceptable window",
+    "detail":  "Server time: 1739577600, request time: 1739577000, delta: 600s, max: 60s"
+  }
+}
+\end{lstlisting}
